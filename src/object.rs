@@ -16,3 +16,12 @@ pub struct ResourceGroup {
     pub location: String,
     pub name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resource {
+    pub id: String,
+    pub kind: Option<String>,
+    pub location: String,
+    pub name: String,
+}

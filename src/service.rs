@@ -1,10 +1,10 @@
 use std::error::Error;
 
-use serde::de::DeserializeOwned;
-use serde_json::from_value;
+use serde_json::Value;
 
 use crate::client::Client;
 use crate::error::AppError::ServiceError;
+use crate::object::Resource;
 use crate::object::ResourceGroup;
 use crate::object::Subscription;
 
@@ -14,6 +14,7 @@ pub struct Service {
     client: Client,
 }
 
+const DEFAULT_PREFIX: &'static str = "https://management.azure.com/";
 const DEFAULT_RESOURCE: &'static str = "https://management.core.windows.net/";
 
 impl Service {
@@ -21,9 +22,26 @@ impl Service {
         return Service { client };
     }
 
+    pub fn get(&self, request: &str, resource: &str) -> Result<Value> {
+        let resource = if resource.is_empty() {
+            DEFAULT_RESOURCE
+        } else {
+            resource
+        };
+        if request.starts_with("http://") {
+            warn!("Plain HTTP requested!");
+            return Err(ServiceError.into());
+        } else if request.starts_with("https://") {
+            return self.client.get_raw(request, resource);
+        } else {
+            let request = format!("{}/{}", DEFAULT_PREFIX, request);
+            return self.client.get_raw(&request, resource);
+        }
+    }
+
     pub fn get_subscriptions(&self) -> Result<Vec<Subscription>> {
         let url = "https://management.azure.com/subscriptions?api-version=2016-06-01";
-        return self.get_list(url, DEFAULT_RESOURCE);
+        return self.client.get_list(url, DEFAULT_RESOURCE);
     }
 
     pub fn get_resource_groups(&self, subscription_id: &str) -> Result<Vec<ResourceGroup>> {
@@ -31,22 +49,14 @@ impl Service {
             "https://management.azure.com/subscriptions/{}/resourcegroups?api-version=2018-05-01",
             subscription_id
         );
-        return self.get_list(&url, DEFAULT_RESOURCE);
+        return self.client.get_list(&url, DEFAULT_RESOURCE);
     }
 
-    fn get_list<T>(&self, url: &str, resource: &str) -> Result<Vec<T>>
-    where
-        T: DeserializeOwned,
-    {
-        let json = self.client.get(url, resource)?;
-        if let Some(arr) = json["value"].as_array() {
-            let mut vec = Vec::new();
-            for entry in arr {
-                let item: T = from_value(entry.clone())?;
-                vec.push(item);
-            }
-            return Ok(vec);
-        }
-        return Err(ServiceError.into());
+    pub fn get_resources(&self, subscription_id: &str) -> Result<Vec<Resource>> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resources?api-version=2018-05-01",
+            subscription_id
+        );
+        return self.client.get_list(&url, DEFAULT_RESOURCE);
     }
 }

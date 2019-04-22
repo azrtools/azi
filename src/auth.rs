@@ -21,7 +21,7 @@ pub struct AccessTokenFile {
     json: RefCell<Value>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AccessTokenFileEntry {
     #[serde(rename = "_authority")]
     pub authority: String,
