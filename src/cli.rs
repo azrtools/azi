@@ -3,7 +3,9 @@ use std::env::args_os;
 use env_logger;
 use log::LevelFilter;
 
+use crate::commands::dns;
 use crate::commands::get;
+use crate::commands::ip;
 use crate::commands::list;
 use crate::commands::Context;
 use crate::error::AppError::ParseError;
@@ -21,9 +23,6 @@ const TRACE: Flag = ("--trace", "Show even more debugging output");
 
 const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE];
 
-const GET: Command = ("get", "Execute a GET request", &[HELP, GET_REQUEST]);
-const GET_REQUEST: Flag = ("<request>", "The request to execute");
-
 const LIST: Command = (
     "list",
     "List existing resource groups",
@@ -31,7 +30,14 @@ const LIST: Command = (
 );
 const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources");
 
-const COMMANDS: &[Command] = &[GET, LIST];
+const DNS: Command = ("dns", "Show DNS records and mapped IP addresses", &[HELP]);
+
+const IP: Command = ("ip", "Show currently used IP addresses", &[HELP]);
+
+const GET: Command = ("get", "Execute a GET request", &[HELP, GET_REQUEST]);
+const GET_REQUEST: Flag = ("<request>", "The request to execute");
+
+const COMMANDS: &[Command] = &[LIST, DNS, IP, GET];
 
 const MAX_COLUMN: usize = 80;
 
@@ -82,13 +88,19 @@ pub fn run(context: &Context) {
 
     let run_command = || -> Result<()> {
         match command {
-            GET => {
-                let request = args.get_arg(0, &GET_REQUEST)?;
-                get(context, request)?;
-            }
             LIST => {
                 let list_resources = args.has_command_flag(&LIST_RESOURCES);
                 list(context, list_resources)?;
+            }
+            DNS => {
+                dns(context)?;
+            }
+            IP => {
+                ip(context)?;
+            }
+            GET => {
+                let request = args.get_arg(0, &GET_REQUEST)?;
+                get(context, request)?;
             }
             _ => return Err(parse_error!("unknown command!")),
         }

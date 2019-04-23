@@ -14,6 +14,42 @@ use crate::error::AppError::HttpClientError;
 
 type Result<T> = std::result::Result<T, Box<Error>>;
 
+pub struct Request<'r> {
+    client: &'r Client,
+    url: &'r str,
+    resource: &'r str,
+    query: (&'r str, &'r str),
+}
+
+impl<'r> Request<'r> {
+    pub fn query(mut self, name: &'r str, value: &'r str) -> Self {
+        self.query = (name, value);
+        return self;
+    }
+
+    pub fn get_raw(&self) -> Result<Value> {
+        return self.client.request(self);
+    }
+
+    pub fn get_list<T>(&self) -> Result<Vec<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let json = self.client.request(self)?;
+        if let Some(arr) = json.as_array() {
+            let mut vec = Vec::new();
+            for entry in arr {
+                let item: T = from_value(entry.clone())?;
+                vec.push(item);
+            }
+            return Ok(vec);
+        }
+
+        debug!("Response is not a JSON array!");
+        return Err(HttpClientError.into());
+    }
+}
+
 pub struct Client {
     access_token_file: Option<AccessTokenFile>,
     client: reqwest::Client,
@@ -27,55 +63,41 @@ impl Client {
         };
     }
 
-    pub fn get_raw(&self, url: &str, resource: &str) -> Result<Value> {
-        return self.request(url, resource);
+    pub fn new_request<'c>(&'c self, url: &'c str, resource: &'c str) -> Request<'c> {
+        return Request {
+            client: &self,
+            url,
+            resource,
+            query: ("", ""),
+        };
     }
 
-    pub fn get_list<T>(&self, url: &str, resource: &str) -> Result<Vec<T>>
-    where
-        T: DeserializeOwned,
-    {
-        let json = self.request(url, resource)?;
-        if let Some(arr) = json.as_array() {
-            let mut vec = Vec::new();
-            for entry in arr {
-                let item: T = from_value(entry.clone())?;
-                vec.push(item);
-            }
-            return Ok(vec);
-        }
+    fn request(&self, request: &Request) -> Result<Value> {
+        debug!("Requesting: {}", request.url);
 
-        debug!("Response is not a JSON array!");
-        return Err(HttpClientError.into());
-    }
-
-    fn request(&self, url: &str, resource: &str) -> Result<Value> {
-        debug!("Requesting: {}", url);
-
-        let entry = self.get_access_entry(resource)?;
+        let entry = self.get_access_entry(request.resource)?;
         let token: &String = &entry.access_token;
 
-        let (res, json) = self.request_json(url, &token)?;
+        let (res, json) = self.request_json(request, &token)?;
 
         if res.status().is_success() {
             return self.check_value(&json);
         } else {
-            return self.try_rerequest(&entry, url, resource, &json);
+            return self.try_rerequest(&entry, request, &json);
         }
     }
 
     fn try_rerequest(
         &self,
         entry: &AccessTokenFileEntry,
-        url: &str,
-        resource: &str,
+        request: &Request,
         json: &Value,
     ) -> Result<Value> {
         if let Some(code) = json["error"]["code"].as_str() {
             if code == "ExpiredAuthenticationToken" {
                 debug!("Auth token expired!");
-                if let Some(entry) = self.refresh_token(resource, entry)? {
-                    let (res, json) = self.request_json(url, &entry.access_token)?;
+                if let Some(entry) = self.refresh_token(request.resource, entry)? {
+                    let (res, json) = self.request_json(request, &entry.access_token)?;
                     if res.status().is_success() {
                         return self.check_value(&json);
                     }
@@ -160,12 +182,13 @@ impl Client {
         return Ok(None);
     }
 
-    fn request_json(&self, url: &str, token: &str) -> Result<(Response, Value)> {
+    fn request_json(&self, request: &Request, token: &str) -> Result<(Response, Value)> {
         let mut res = self
             .client
-            .get(url)
+            .get(request.url)
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .header(CONTENT_TYPE, "application/json")
+            .query(&[request.query])
             .send()?;
 
         trace!("Response: {:#?}", res);
