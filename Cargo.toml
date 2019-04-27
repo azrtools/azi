@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Pascal"]
 edition = "2018"
 
+homepage = "https://github.com/pascalgn/azi"
 description = "Show Azure information"
 readme = "README.md"
 keywords = ["azure", "cli"]
