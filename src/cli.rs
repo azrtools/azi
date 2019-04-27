@@ -1,15 +1,22 @@
 use std::env::args_os;
+use std::error::Error;
+use std::io::stdin;
+use std::io::Read;
 
 use env_logger;
 use log::LevelFilter;
 
+use crate::commands::costs;
 use crate::commands::dns;
 use crate::commands::get;
 use crate::commands::ip;
 use crate::commands::list;
+use crate::commands::post;
 use crate::commands::Context;
 use crate::error::AppError::ParseError;
+use crate::service::Timeframe;
 use crate::utils::convert_str;
+use crate::utils::days_of_month;
 use crate::utils::Result;
 
 type Flag = (&'static str, &'static str);
@@ -34,15 +41,22 @@ const DNS: Command = ("dns", "Show DNS records and mapped IP addresses", &[HELP]
 
 const IP: Command = ("ip", "Show currently used IP addresses", &[HELP]);
 
-const GET: Command = ("get", "Execute a GET request", &[HELP, GET_REQUEST]);
-const GET_REQUEST: Flag = ("<request>", "The request to execute");
+const COSTS: Command = ("costs", "Show the current resource costs", &[HELP, PERIOD]);
+const PERIOD: Flag = (
+    "[<period>]",
+    "The billing period to show costs for, for example 2019 or 201905. By default, the costs for the current month are shown",
+);
 
-const COMMANDS: &[Command] = &[LIST, DNS, IP, GET];
+const GET: Command = ("get", "Execute a GET request", &[HELP, REQUEST]);
+const POST: Command = ("post", "Execute a POST request", &[HELP, REQUEST]);
+const REQUEST: Flag = ("<request>", "The request to execute");
+
+const COMMANDS: &[Command] = &[LIST, DNS, IP, COSTS, GET, POST];
 
 const MAX_COLUMN: usize = 80;
 
 macro_rules! parse_error {
-    ($($arg:tt)*) => (ParseError(format!($($arg)*)).into())
+    ($($arg:tt)*) => (Box::<Error>::from(ParseError(format!($($arg)*))))
 }
 
 pub fn run(context: &Context) {
@@ -98,9 +112,52 @@ pub fn run(context: &Context) {
             IP => {
                 ip(context)?;
             }
+            COSTS => {
+                fn parse_period(period: &str) -> Result<Timeframe> {
+                    if period.len() == 4 {
+                        let year: u32 = period.parse()?;
+                        return Ok(Timeframe::Custom {
+                            from: format!("{:04}-01-01", year),
+                            to: format!("{:04}-12-31", year),
+                        });
+                    } else if period.len() == 6 {
+                        let year: u32 = period[0..4].parse()?;
+                        let month: u32 = period[4..6].parse()?;
+                        let days = days_of_month(year, month)?;
+                        return Ok(Timeframe::Custom {
+                            from: format!("{:04}-{:02}-01", year, month),
+                            to: format!("{:04}-{:02}-{:02}", year, month, days),
+                        });
+                    } else if period.len() == 8 {
+                        let year: u32 = period[0..4].parse()?;
+                        let month: u32 = period[4..6].parse()?;
+                        let day: u32 = period[6..8].parse()?;
+                        return Ok(Timeframe::Custom {
+                            from: format!("{:04}-{:02}-{:02}", year, month, day),
+                            to: format!("{:04}-{:02}-{:02}", year, month, day),
+                        });
+                    } else {
+                        return Err(Box::from("invalid length!"));
+                    }
+                }
+                match args.get_arg_opt(0) {
+                    Some(period) => {
+                        let timeframe = parse_period(period)
+                            .or(Err(parse_error!("invalid period: {}", period)))?;
+                        costs(context, &timeframe)?;
+                    }
+                    None => costs(context, &Timeframe::MonthToDate)?,
+                }
+            }
             GET => {
-                let request = args.get_arg(0, &GET_REQUEST)?;
+                let request = args.get_arg(0, &REQUEST)?;
                 get(context, request)?;
+            }
+            POST => {
+                let request = args.get_arg(0, &REQUEST)?;
+                let mut buffer = String::new();
+                stdin().read_to_string(&mut buffer)?;
+                post(context, request, &buffer)?;
             }
             _ => return Err(parse_error!("unknown command!")),
         }
@@ -213,6 +270,10 @@ impl Args {
             .command_args
             .get(index)
             .ok_or(parse_error!("missing argument: {}", flag.0));
+    }
+
+    fn get_arg_opt(&self, index: usize) -> Option<&String> {
+        return self.command_args.get(index);
     }
 }
 

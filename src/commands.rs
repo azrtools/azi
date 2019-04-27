@@ -1,8 +1,10 @@
 use serde_json::to_string_pretty;
 use serde_json::Value;
 
+use crate::object::DnsRecordEntry;
 use crate::object::Identifiable;
 use crate::service::Service;
+use crate::service::Timeframe;
 use crate::service::TYPE_DNS_ZONE;
 use crate::utils::Result;
 
@@ -57,18 +59,14 @@ pub fn dns(context: &Context) -> Result<()> {
         )?;
 
         for record in records {
-            if record.record_type.ends_with("/A") || record.record_type.ends_with("/CNAME") {
-                println!("  {}", record.name);
-
-                if let Some(arecords) = record.properties.records {
-                    for arecord in arecords {
-                        println!("    A {}", arecord.ip_address);
+            println!("  {}", record.name);
+            match record.entry {
+                DnsRecordEntry::A(ip_addresses) => {
+                    for ip in ip_addresses {
+                        println!("    A {}", ip);
                     }
                 }
-
-                if let Some(cname) = record.properties.cname {
-                    println!("    CNAME {}", cname.cname);
-                }
+                DnsRecordEntry::CNAME(cname) => println!("    CNAME {}", cname),
             }
         }
     }
@@ -98,8 +96,54 @@ pub fn ip(context: &Context) -> Result<()> {
     return Ok(());
 }
 
+pub fn costs(context: &Context, timeframe: &Timeframe) -> Result<()> {
+    let service = &context.service;
+
+    let subscriptions = service.get_subscriptions()?;
+
+    let mut total = 0.0;
+    let mut total_currency = None;
+
+    for subscription in &subscriptions {
+        println!("{}", subscription.name);
+
+        let mut sum = 0.0;
+        let mut sum_currency = None;
+
+        let costs = service.get_costs(&subscription.subscription_id, timeframe)?;
+        for item in &costs {
+            println!(
+                "  {}  {:0.2} {}",
+                item.resource_group, item.costs, item.currency
+            );
+            sum += item.costs;
+            if sum_currency == None {
+                sum_currency = Some(&item.currency);
+            }
+        }
+
+        if let Some(currency) = sum_currency {
+            println!("  sum  {:0.2} {}", sum, currency);
+            total += sum;
+            total_currency = Some(currency.clone());
+        }
+    }
+
+    if let Some(currency) = total_currency {
+        println!("total  {:0.2} {}", total, currency);
+    }
+
+    return Ok(());
+}
+
 pub fn get(context: &Context, request: &str) -> Result<()> {
     let result: Value = context.service.get(request, "")?;
+    println!("{}", to_string_pretty(&result)?);
+    return Ok(());
+}
+
+pub fn post(context: &Context, request: &str, body: &str) -> Result<()> {
+    let result: Value = context.service.post(request, "", body)?;
     println!("{}", to_string_pretty(&result)?);
     return Ok(());
 }

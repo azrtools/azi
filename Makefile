@@ -1,5 +1,7 @@
 all:
 	cargo build
 
-run:
-	cargo run
+release:
+	cargo test
+	cargo build --release
+	strip target/release/azi

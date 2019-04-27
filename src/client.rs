@@ -19,6 +19,7 @@ pub struct Request<'r> {
     url: &'r str,
     resource: &'r str,
     query: (&'r str, &'r str),
+    body: Option<&'r str>,
 }
 
 impl<'r> Request<'r> {
@@ -27,7 +28,16 @@ impl<'r> Request<'r> {
         return self;
     }
 
+    pub fn body(mut self, body: &'r str) -> Self {
+        self.body = Some(body);
+        return self;
+    }
+
     pub fn get_raw(&self) -> Result<Value> {
+        return self.client.request(self);
+    }
+
+    pub fn post(&mut self) -> Result<Value> {
         return self.client.request(self);
     }
 
@@ -69,6 +79,7 @@ impl Client {
             url,
             resource,
             query: ("", ""),
+            body: None,
         };
     }
 
@@ -81,7 +92,7 @@ impl Client {
         let (res, json) = self.request_json(request, &token)?;
 
         if res.status().is_success() {
-            return self.check_value(&json);
+            return self.get_value(&json);
         } else {
             return self.try_rerequest(&entry, request, &json);
         }
@@ -99,7 +110,7 @@ impl Client {
                 if let Some(entry) = self.refresh_token(request.resource, entry)? {
                     let (res, json) = self.request_json(request, &entry.access_token)?;
                     if res.status().is_success() {
-                        return self.check_value(&json);
+                        return self.get_value(&json);
                     }
                 }
             } else {
@@ -109,13 +120,13 @@ impl Client {
         return Err(HttpClientError.into());
     }
 
-    fn check_value(&self, json: &Value) -> Result<Value> {
+    fn get_value(&self, json: &Value) -> Result<Value> {
         if let Some(value) = json.get("value") {
             if !value.is_null() {
                 return Ok(value.clone());
             }
         }
-        return Err(HttpClientError.into());
+        return Ok(json.clone());
     }
 
     fn get_access_entry(&self, resource: &str) -> Result<AccessTokenFileEntry> {
@@ -183,9 +194,12 @@ impl Client {
     }
 
     fn request_json(&self, request: &Request, token: &str) -> Result<(Response, Value)> {
-        let mut res = self
-            .client
-            .get(request.url)
+        let builder = match request.body {
+            Some(body) => self.client.post(request.url).body(body.to_owned()),
+            None => self.client.get(request.url),
+        };
+
+        let mut res = builder
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .header(CONTENT_TYPE, "application/json")
             .query(&[request.query])

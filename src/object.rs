@@ -80,36 +80,24 @@ pub struct IpAddressProperties {
     pub ip_address: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DnsRecord {
     pub id: String,
     pub name: String,
-    #[serde(rename = "type")]
-    pub record_type: String,
-    pub properties: DnsRecordProperties,
+    pub entry: DnsRecordEntry,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum DnsRecordEntry {
+    A(Vec<String>),
+    CNAME(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsRecordProperties {
-    #[serde(rename = "fqdn")]
-    pub name: String,
-
-    #[serde(rename = "ARecords")]
-    pub records: Option<Vec<DnsRecordA>>,
-
-    #[serde(rename = "CNAMERecord")]
-    pub cname: Option<DnsRecordCname>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsRecordA {
-    #[serde(rename = "ipv4Address")]
-    pub ip_address: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsRecordCname {
-    pub cname: String,
+pub struct Costs {
+    pub resource_group: String,
+    pub costs: f64,
+    pub currency: String,
 }
 
 #[cfg(test)]
