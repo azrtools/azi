@@ -105,17 +105,35 @@ impl Service {
             .get_list();
     }
 
-    pub fn get_ip_addresses(
-        &self,
-        subscription_id: &str,
-        resource_group: &str,
-    ) -> Result<Vec<IpAddress>> {
+    pub fn get_ip_addresses(&self, subscription_id: &str) -> Result<Vec<IpAddress>> {
         let url = format!(
-            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/publicIPAddresses?api-version=2018-11-01",
-            subscription_id,
-            resource_group
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.Network/publicIPAddresses?api-version=2018-11-01",
+            subscription_id
         );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+        return Ok(self
+            .client
+            .new_request(&url, DEFAULT_RESOURCE)
+            .get_raw()?
+            .as_array()
+            .ok_or(ServiceError)?
+            .iter()
+            .filter_map(|row| {
+                if let (Some(id), Some(name), Some(ip_address)) = (
+                    row["id"].as_str(),
+                    row["name"].as_str(),
+                    row["properties"]["ipAddress"].as_str(),
+                ) {
+                    return Some(IpAddress {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        ip_address: ip_address.to_string(),
+                    });
+                } else {
+                    trace!("Invalid row, missing id or name: {:?}", row);
+                    return None;
+                }
+            })
+            .collect());
     }
 
     pub fn get_dns_records(
@@ -145,6 +163,11 @@ impl Service {
                         trace!("Invalid row, missing id or name: {:?}", row);
                         return None;
                     };
+                let fqdn = if name == "@" {
+                    zone.to_owned()
+                } else {
+                    format!("{}.{}", name, zone)
+                };
                 let entry = if let Some(a_records) = row["properties"]["ARecords"].as_array() {
                     let ip_addresses: Vec<String> = a_records
                         .iter()
@@ -158,7 +181,12 @@ impl Service {
                     trace!("Invalid row, unknown record type: {:?}", row);
                     return None;
                 };
-                return Some(DnsRecord { id, name, entry });
+                return Some(DnsRecord {
+                    id,
+                    name,
+                    fqdn,
+                    entry,
+                });
             })
             .collect();
 

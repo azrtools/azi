@@ -8,11 +8,13 @@ use log::LevelFilter;
 
 use crate::commands::costs;
 use crate::commands::dns;
+use crate::commands::domains;
 use crate::commands::get;
 use crate::commands::ip;
 use crate::commands::list;
 use crate::commands::post;
 use crate::commands::Context;
+use crate::error::AppError;
 use crate::error::AppError::ParseError;
 use crate::service::Timeframe;
 use crate::utils::convert_str;
@@ -37,6 +39,16 @@ const LIST: Command = (
 );
 const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources");
 
+const DOMAINS: Command = (
+    "domains",
+    "Show all domains and hosting resource groups",
+    &[HELP, DOMAIN],
+);
+const DOMAIN: Flag = (
+    "[<domain>]",
+    "The domain to filter for, otherwise all domains are shown",
+);
+
 const DNS: Command = ("dns", "Show DNS records and mapped IP addresses", &[HELP]);
 
 const IP: Command = ("ip", "Show currently used IP addresses", &[HELP]);
@@ -51,7 +63,7 @@ const GET: Command = ("get", "Execute a GET request", &[HELP, REQUEST]);
 const POST: Command = ("post", "Execute a POST request", &[HELP, REQUEST]);
 const REQUEST: Flag = ("<request>", "The request to execute");
 
-const COMMANDS: &[Command] = &[LIST, DNS, IP, COSTS, GET, POST];
+const COMMANDS: &[Command] = &[LIST, DOMAINS, DNS, IP, COSTS, GET, POST];
 
 const MAX_COLUMN: usize = 80;
 
@@ -105,6 +117,9 @@ pub fn run(context: &Context) {
             LIST => {
                 let list_resources = args.has_command_flag(&LIST_RESOURCES);
                 list(context, list_resources)?;
+            }
+            DOMAINS => {
+                domains(context, args.get_arg_opt(0))?;
             }
             DNS => {
                 dns(context)?;
@@ -168,8 +183,11 @@ pub fn run(context: &Context) {
         Ok(_) => (),
         Err(err) => {
             eprintln!("error: {}", err);
-            Printer::new().print_command_usage(&command);
-            return;
+            if let Ok(app_err) = err.downcast::<AppError>() {
+                if let ParseError(_) = *app_err {
+                    Printer::new().print_command_usage(&command);
+                }
+            }
         }
     }
 }

@@ -2,6 +2,9 @@ use regex::Regex;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
+use crate::error::AppError::ParseError;
+use crate::utils::Result;
+
 pub trait Named {
     fn name(&self) -> &String;
 }
@@ -9,23 +12,23 @@ pub trait Named {
 pub trait Identifiable {
     fn id(&self) -> &String;
 
-    fn subscription_id(&self) -> Option<&str> {
+    fn subscription_id(&self) -> Result<&str> {
         lazy_static! {
             static ref SUBSCRIPTION_RE: Regex = Regex::new(r"^/subscriptions/([^/]+)").unwrap();
         }
         match SUBSCRIPTION_RE.captures(self.id()) {
-            Some(captures) => return Some(captures.get(1).unwrap().as_str()),
-            None => return None,
+            Some(captures) => return Ok(captures.get(1).unwrap().as_str()),
+            None => return Err(ParseError("invalid id!".to_owned()).into()),
         }
     }
 
-    fn resource_group(&self) -> Option<&str> {
+    fn resource_group(&self) -> Result<&str> {
         lazy_static! {
             static ref RESOURCE_GROUP_RE: Regex = Regex::new(r"/resourceGroups/([^/]+)").unwrap();
         }
         match RESOURCE_GROUP_RE.captures(self.id()) {
-            Some(captures) => return Some(captures.get(1).unwrap().as_str()),
-            None => return None,
+            Some(captures) => return Ok(captures.get(1).unwrap().as_str()),
+            None => return Err(ParseError("invalid id!".to_owned()).into()),
         }
     }
 }
@@ -67,16 +70,10 @@ pub struct Resource {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IpAddress {
     pub id: String,
     pub name: String,
-    pub properties: IpAddressProperties,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpAddressProperties {
-    #[serde(rename = "ipAddress")]
     pub ip_address: String,
 }
 
@@ -84,6 +81,7 @@ pub struct IpAddressProperties {
 pub struct DnsRecord {
     pub id: String,
     pub name: String,
+    pub fqdn: String,
     pub entry: DnsRecordEntry,
 }
 
@@ -117,22 +115,24 @@ mod tests {
     #[test]
     fn test_subscription_id() {
         assert_eq!(
-            Some("123"),
+            "123",
             TestIdentifiable {
                 id: "/subscriptions/123/test".to_owned()
             }
             .subscription_id()
+            .unwrap()
         );
     }
 
     #[test]
     fn test_resource_group() {
         assert_eq!(
-            Some("test"),
+            "test",
             TestIdentifiable {
                 id: "/subscriptions/abc/resourceGroups/test".to_owned()
             }
             .resource_group()
+            .unwrap()
         );
     }
 }
