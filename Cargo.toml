@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["Pascal"]
 edition = "2018"
 
+description = "Show Azure information"
+readme = "README.md"
+keywords = ["azure", "cli"]
+categories = ["command-line-interface"]
+license = "Apache-2.0"
+
 [[bin]]
 name = "azi"
 path = "src/main.rs"
