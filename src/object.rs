@@ -65,7 +65,8 @@ pub struct ResourceGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
     pub id: String,
-    pub kind: Option<String>,
+    #[serde(rename = "type")]
+    pub resource_type: String,
     pub location: String,
     pub name: String,
 }
@@ -74,6 +75,7 @@ pub struct Resource {
 pub struct IpAddress {
     pub id: String,
     pub name: String,
+    #[serde(rename = "ipAddress")]
     pub ip_address: String,
 }
 
@@ -93,6 +95,7 @@ pub enum DnsRecordEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Costs {
+    #[serde(rename = "resourceGroup")]
     pub resource_group: String,
     pub costs: f64,
     pub currency: String,

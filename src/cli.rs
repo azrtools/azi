@@ -2,10 +2,12 @@ use std::env::args_os;
 use std::error::Error;
 use std::io::stdin;
 use std::io::Read;
+use std::slice::Iter;
 
 use env_logger;
 use log::LevelFilter;
 
+use crate::client::Client;
 use crate::commands::costs;
 use crate::commands::dns;
 use crate::commands::domains;
@@ -16,28 +18,37 @@ use crate::commands::post;
 use crate::commands::Context;
 use crate::error::AppError;
 use crate::error::AppError::ParseError;
+use crate::output::JsonOutput;
+use crate::output::Output;
+use crate::output::TextOutput;
+use crate::service::Service;
 use crate::service::Timeframe;
 use crate::utils::convert_str;
 use crate::utils::days_of_month;
 use crate::utils::Result;
 
-type Flag = (&'static str, &'static str);
+type Flag = (&'static str, &'static str, bool);
 
 type Command = (&'static str, &'static str, &'static [Flag]);
 
-const HELP: Flag = ("-h, --help", "Show this help message and exit");
-const VERSION: Flag = ("--version", "Show program's version number and exit");
-const DEBUG: Flag = ("--debug", "Show debugging output");
-const TRACE: Flag = ("--trace", "Show even more debugging output");
+const HELP: Flag = ("-h, --help", "Show this help message and exit", false);
+const VERSION: Flag = ("--version", "Show program's version number and exit", false);
+const DEBUG: Flag = ("--debug", "Show debugging output", false);
+const TRACE: Flag = ("--trace", "Show even more debugging output", false);
+const OUTPUT: Flag = (
+    "-o, --output <format>",
+    "Set output format, one of 'text' (default) or 'json'",
+    true,
+);
 
-const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE];
+const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, OUTPUT];
 
 const LIST: Command = (
     "list",
     "List existing resource groups",
     &[HELP, LIST_RESOURCES],
 );
-const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources");
+const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources", false);
 
 const DOMAINS: Command = (
     "domains",
@@ -47,6 +58,7 @@ const DOMAINS: Command = (
 const DOMAIN: Flag = (
     "[<domain>]",
     "The domain to filter for, otherwise all domains are shown",
+    false,
 );
 
 const DNS: Command = ("dns", "Show DNS records and mapped IP addresses", &[HELP]);
@@ -57,11 +69,12 @@ const COSTS: Command = ("costs", "Show the current resource costs", &[HELP, PERI
 const PERIOD: Flag = (
     "[<period>]",
     "The billing period to show costs for, for example 2019 or 201905. By default, the costs for the current month are shown",
+    false,
 );
 
 const GET: Command = ("get", "Execute a GET request", &[HELP, REQUEST]);
 const POST: Command = ("post", "Execute a POST request", &[HELP, REQUEST]);
-const REQUEST: Flag = ("<request>", "The request to execute");
+const REQUEST: Flag = ("<request>", "The request to execute", false);
 
 const COMMANDS: &[Command] = &[LIST, DOMAINS, DNS, IP, COSTS, GET, POST];
 
@@ -71,7 +84,7 @@ macro_rules! parse_error {
     ($($arg:tt)*) => (Box::<Error>::from(ParseError(format!($($arg)*))))
 }
 
-pub fn run(context: &Context) {
+pub fn run() {
     let str_args: Vec<String> = args_os().skip(1).map(convert_str).collect();
 
     let args = match Args::parse(str_args.iter().map(AsRef::as_ref).collect()) {
@@ -112,20 +125,39 @@ pub fn run(context: &Context) {
         return;
     }
 
+    let output: &Output = match args.get_global_flag_arg(&OUTPUT) {
+        Some("json") => &JsonOutput {},
+        Some("text") | None => &TextOutput {},
+        Some(arg) => {
+            eprintln!("error: unknown output format: {}", arg);
+            Printer::new().print_usage();
+            return;
+        }
+    };
+
+    let client = Client::new();
+    let service = Service::new(client);
+
+    let context = Context { service: &service };
+
     let run_command = || -> Result<()> {
         match command {
             LIST => {
                 let list_resources = args.has_command_flag(&LIST_RESOURCES);
-                list(context, list_resources)?;
+                let result = list(&context, list_resources)?;
+                output.print_list_results(&result)?;
             }
             DOMAINS => {
-                domains(context, args.get_arg_opt(0))?;
+                let result = domains(&context, args.get_arg_opt(0))?;
+                output.print_domains(&result)?;
             }
             DNS => {
-                dns(context)?;
+                let result = dns(&context)?;
+                output.print_dns_results(&result)?;
             }
             IP => {
-                ip(context)?;
+                let result = ip(&context)?;
+                output.print_ip_results(&result)?;
             }
             COSTS => {
                 fn parse_period(period: &str) -> Result<Timeframe> {
@@ -155,24 +187,27 @@ pub fn run(context: &Context) {
                         return Err(Box::from("invalid length!"));
                     }
                 }
-                match args.get_arg_opt(0) {
+                let result = match args.get_arg_opt(0) {
                     Some(period) => {
                         let timeframe = parse_period(period)
                             .or(Err(parse_error!("invalid period: {}", period)))?;
-                        costs(context, &timeframe)?;
+                        costs(&context, &timeframe)?
                     }
-                    None => costs(context, &Timeframe::MonthToDate)?,
-                }
+                    None => costs(&context, &Timeframe::MonthToDate)?,
+                };
+                output.print_cost_results(&result)?;
             }
             GET => {
                 let request = args.get_arg(0, &REQUEST)?;
-                get(context, request)?;
+                let result = get(&context, request)?;
+                output.print_value(&result)?;
             }
             POST => {
                 let request = args.get_arg(0, &REQUEST)?;
                 let mut buffer = String::new();
                 stdin().read_to_string(&mut buffer)?;
-                post(context, request, &buffer)?;
+                let result = post(&context, request, &buffer)?;
+                output.print_value(&result)?;
             }
             _ => return Err(parse_error!("unknown command!")),
         }
@@ -208,11 +243,13 @@ fn long_flag(flag: &Flag) -> &str {
 
 #[derive(Debug)]
 struct Args {
-    global_flags: Vec<Flag>,
+    global_flags: Vec<Arg>,
     command: Option<Command>,
-    command_flags: Vec<Flag>,
+    command_flags: Vec<Arg>,
     command_args: Vec<String>,
 }
+
+type Arg = (Flag, String);
 
 impl Args {
     fn parse(args: Vec<&str>) -> Result<Args> {
@@ -223,35 +260,40 @@ impl Args {
 
         let mut double_dash = false;
 
-        for arg in args {
+        fn parse_flag(flags: &[Flag], arg: &str, it: &mut Iter<&str>) -> Result<Arg> {
+            let found = flags
+                .iter()
+                .find(|flag| arg == short_flag(flag) || arg == long_flag(flag));
+            if let Some(flag) = found {
+                if flag.2 {
+                    if let Some(&arg) = it.next() {
+                        return Ok((*flag, arg.to_string()));
+                    } else {
+                        return Err(parse_error!("missing argument for {}", long_flag(flag)));
+                    }
+                } else {
+                    return Ok((*flag, "".to_owned()));
+                }
+            } else {
+                return Err(parse_error!("unknown option: {}", arg));
+            }
+        }
+
+        let mut it = args.iter();
+        while let Some(&arg) = it.next() {
             if double_dash {
                 command_args.push(arg.to_string());
             } else if arg == "--" {
                 double_dash = true;
             } else if let Some(command) = command {
                 if arg.starts_with("-") {
-                    let found = command
-                        .2
-                        .iter()
-                        .find(|flag| arg == short_flag(flag) || arg == long_flag(flag));
-                    if let Some(flag) = found {
-                        command_flags.push(*flag);
-                    } else {
-                        return Err(parse_error!("unknown option: {}", arg));
-                    }
+                    command_flags.push(parse_flag(command.2, arg, &mut it)?);
                 } else {
                     command_args.push(arg.to_string());
                 }
             } else {
                 if arg.starts_with("-") {
-                    let found = GLOBAL_FLAGS
-                        .iter()
-                        .find(|flag| arg == short_flag(flag) || arg == long_flag(flag));
-                    if let Some(flag) = found {
-                        global_flags.push(*flag);
-                    } else {
-                        return Err(parse_error!("unknown option: {}", arg));
-                    }
+                    global_flags.push(parse_flag(GLOBAL_FLAGS, arg, &mut it)?);
                 } else {
                     let found = COMMANDS.iter().find(|command| arg == command.0);
                     if let Some(cmd) = found {
@@ -276,11 +318,30 @@ impl Args {
     }
 
     fn has_global_flag(&self, flag: &Flag) -> bool {
-        return self.global_flags.contains(&flag);
+        for global_flag in &self.global_flags {
+            if &global_flag.0 == flag {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn has_command_flag(&self, flag: &Flag) -> bool {
-        return self.command_flags.contains(&flag);
+        for command_flag in &self.command_flags {
+            if &command_flag.0 == flag {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn get_global_flag_arg(&self, flag: &Flag) -> Option<&str> {
+        for global_flag in &self.global_flags {
+            if &global_flag.0 == flag {
+                return Some(&global_flag.1);
+            }
+        }
+        return None;
     }
 
     fn get_arg(&self, index: usize, flag: &Flag) -> Result<&String> {
@@ -451,7 +512,7 @@ mod tests {
     #[test]
     fn test_parse() {
         let args = Args::parse(vec!["--debug", "get", "test", "--"]).unwrap();
-        assert_eq!(vec!(DEBUG), args.global_flags);
+        assert_eq!(vec!((DEBUG, "".to_owned())), args.global_flags);
         assert_eq!(Some(GET), args.command);
         assert_eq!(0, args.command_flags.len());
         assert_eq!(vec!("test"), args.command_args);

@@ -17,19 +17,12 @@ mod client;
 mod commands;
 mod error;
 mod object;
+mod output;
 mod service;
 mod utils;
 
 use cli::run;
-use client::Client;
-use commands::Context;
-use service::Service;
 
 fn main() {
-    let client = Client::new();
-    let service = Service::new(client);
-
-    let context = Context { service };
-
-    run(&context);
+    run();
 }

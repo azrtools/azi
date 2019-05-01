@@ -1,49 +1,74 @@
 use std::collections::HashMap;
 
-use serde_json::to_string_pretty;
+use serde_derive::Serialize;
 use serde_json::Value;
 
+use crate::object::Costs;
 use crate::object::DnsRecord;
 use crate::object::DnsRecordEntry;
 use crate::object::Identifiable;
+use crate::object::IpAddress;
+use crate::object::Resource;
 use crate::object::ResourceGroup;
+use crate::object::Subscription;
 use crate::service::Service;
 use crate::service::Timeframe;
 use crate::service::TYPE_DNS_ZONE;
 use crate::utils::Result;
 
-pub struct Context {
-    pub service: Service,
+pub struct Context<'c> {
+    pub service: &'c Service,
 }
 
-pub fn list(context: &Context, list_resources: bool) -> Result<()> {
+#[derive(Serialize)]
+pub struct ListResult {
+    pub subscription: Subscription,
+    #[serde(rename = "resourceGroups")]
+    pub resource_groups: Vec<ResourceGroup>,
+    pub resources: Vec<Resource>,
+}
+
+pub fn list(context: &Context, list_resources: bool) -> Result<Vec<ListResult>> {
     let service = &context.service;
 
-    let subscriptions = service.get_subscriptions()?;
-    for subscription in subscriptions {
-        println!("{}", subscription.name);
+    let mut subscriptions = vec![];
 
-        let groups = service.get_resource_groups(&subscription.subscription_id)?;
-        for group in groups {
-            println!("  {}", group.name);
-        }
+    for subscription in service.get_subscriptions()? {
+        let resource_groups = service.get_resource_groups(&subscription.subscription_id)?;
 
-        if list_resources {
-            let resources = service.get_resources(&subscription.subscription_id)?;
-            for resource in resources {
-                println!(
-                    "    {} {}",
-                    resource.kind.unwrap_or("unknown".to_string()),
-                    resource.name
-                );
-            }
-        }
+        let resources = if list_resources {
+            service.get_resources(&subscription.subscription_id)?
+        } else {
+            vec![]
+        };
+
+        subscriptions.push(ListResult {
+            subscription,
+            resource_groups,
+            resources,
+        })
     }
 
-    return Ok(());
+    return Ok(subscriptions);
 }
 
-pub fn domains(context: &Context, filter: Option<&String>) -> Result<()> {
+#[derive(Serialize)]
+pub struct Domain {
+    pub name: String,
+    pub entries: Vec<Option<DnsRecordEntry>>,
+    #[serde(rename = "ipAddresses")]
+    pub ip_addresses: Vec<DomainIpAddress>,
+}
+
+#[derive(Serialize)]
+pub struct DomainIpAddress {
+    #[serde(rename = "ipAddress")]
+    pub ip_address: String,
+    #[serde(rename = "resourceGroup")]
+    pub resource_group: Option<ResourceGroup>,
+}
+
+pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>> {
     let service = &context.service;
 
     let subscriptions = service.get_subscriptions()?;
@@ -72,74 +97,88 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<()> {
         }
     }
 
-    let mut domains: Vec<&String> = (&records).iter().map(|record| &record.fqdn).collect();
+    let mut domain_names: Vec<&String> = (&records).iter().map(|record| &record.fqdn).collect();
 
     if let Some(filter) = filter {
-        domains.retain(|domain| domain.contains(filter));
+        domain_names.retain(|domain| domain.contains(filter));
     } else {
         for record in &records {
             match &record.entry {
                 DnsRecordEntry::CNAME(cname) => {
-                    domains.retain(|&domain| domain != cname);
+                    domain_names.retain(|&domain| domain != cname);
                 }
                 _ => (),
             }
         }
     }
 
-    domains.sort();
+    domain_names.sort();
 
     const MAX_DEPTH: usize = 5;
 
-    fn find_target<'f>(
-        records: &'f Vec<DnsRecord>,
-        domain: &str,
+    fn resolve_entries<'e>(
+        entries: &'e mut Vec<Option<DnsRecordEntry>>,
+        records: &'e Vec<DnsRecord>,
+        domain_name: &str,
         depth: usize,
-    ) -> Option<(&'f DnsRecord, usize)> {
+    ) {
         for record in records {
-            if &record.fqdn == domain {
+            if &record.fqdn == domain_name {
                 match &record.entry {
                     DnsRecordEntry::CNAME(cname) => {
                         if depth >= MAX_DEPTH {
-                            println!("{0:1$} -> [recursion depth exceeded]", "", depth * 4);
-                            return None;
+                            entries.push(None);
                         } else {
-                            println!("{0:1$} -> {2}", "", depth * 4, cname);
-                            return find_target(records, cname, depth + 1);
+                            entries.push(Some(record.entry.clone()));
+                            resolve_entries(entries, records, cname, depth + 1);
                         }
                     }
                     DnsRecordEntry::A(_) => {
-                        return Some((record, depth));
+                        entries.push(Some(record.entry.clone()));
                     }
                 }
             }
         }
-        return None;
     }
 
-    for domain in &domains {
-        println!("{}", domain);
+    let mut domains = vec![];
 
-        if let Some((target, depth)) = find_target(&records, domain, 0) {
-            match &target.entry {
-                DnsRecordEntry::A(ip_addresses) => {
-                    for ip_address in ip_addresses {
-                        println!("{0:1$} -> {2}", "", depth * 4, ip_address);
+    for domain_name in &domain_names {
+        let mut entries = vec![];
+        resolve_entries(&mut entries, &records, domain_name, 0);
 
-                        if let Some(group) = ip_to_group.get(ip_address) {
-                            println!("{0:1$}     -> {2}", "", depth * 4, group.name);
-                        }
+        let mut ip_addresses = vec![];
+        if let Some(Some(entry)) = entries.last() {
+            match entry {
+                DnsRecordEntry::A(ip_addrs) => {
+                    for ip in ip_addrs {
+                        ip_addresses.push(DomainIpAddress {
+                            ip_address: ip.clone(),
+                            resource_group: ip_to_group.get(ip).map(|r| r.clone()),
+                        });
                     }
                 }
                 _ => (),
             }
         }
+
+        domains.push(Domain {
+            name: domain_name.to_string(),
+            entries,
+            ip_addresses,
+        });
     }
 
-    return Ok(());
+    return Ok(domains);
 }
 
-pub fn dns(context: &Context) -> Result<()> {
+#[derive(Serialize)]
+pub struct DnsResult {
+    pub zone: Resource,
+    pub records: Vec<DnsRecord>,
+}
+
+pub fn dns(context: &Context) -> Result<Vec<DnsResult>> {
     let service = &context.service;
 
     let subscriptions = service.get_subscriptions()?;
@@ -149,101 +188,96 @@ pub fn dns(context: &Context) -> Result<()> {
         zones.extend(service.get_resources_by_type(&subscription.subscription_id, TYPE_DNS_ZONE)?);
     }
 
-    for zone in &zones {
-        println!("{}", zone.name);
+    let mut results = vec![];
 
+    for zone in &zones {
         let records =
             service.get_dns_records(zone.subscription_id()?, zone.resource_group()?, &zone.name)?;
-
-        for record in records {
-            println!("  {}", record.name);
-            match record.entry {
-                DnsRecordEntry::A(ip_addresses) => {
-                    for ip in ip_addresses {
-                        println!("    A {}", ip);
-                    }
-                }
-                DnsRecordEntry::CNAME(cname) => println!("    CNAME {}", cname),
-            }
-        }
+        results.push(DnsResult {
+            zone: zone.clone(),
+            records,
+        });
     }
 
-    return Ok(());
+    return Ok(results);
 }
 
-pub fn ip(context: &Context) -> Result<()> {
+#[derive(Serialize)]
+pub struct IpResult {
+    pub subscription: Subscription,
+    #[serde(rename = "resourceGroups")]
+    pub resource_groups: Vec<IpResultResourceGroup>,
+}
+
+#[derive(Serialize)]
+pub struct IpResultResourceGroup {
+    #[serde(rename = "resourceGroup")]
+    pub resource_group: ResourceGroup,
+    #[serde(rename = "ipAddresses")]
+    pub ip_addresses: Vec<IpAddress>,
+}
+
+pub fn ip(context: &Context) -> Result<Vec<IpResult>> {
+    let mut result = vec![];
+
     let service = &context.service;
-
     let subscriptions = service.get_subscriptions()?;
-
     for subscription in &subscriptions {
-        println!("{}", subscription.name);
+        let mut resource_groups = vec![];
 
-        let ips = service.get_ip_addresses(&subscription.subscription_id)?;
+        let ip_addrs = service.get_ip_addresses(&subscription.subscription_id)?;
 
-        let groups = service.get_resource_groups(&subscription.subscription_id)?;
-        for group in groups {
-            println!("  {}", group.name);
-
-            for ip in &ips {
-                if ip.resource_group()? == group.name {
-                    println!("    {}", ip.ip_address);
+        for resource_group in service.get_resource_groups(&subscription.subscription_id)? {
+            let mut ip_addresses = vec![];
+            for ip in &ip_addrs {
+                if ip.resource_group()? == resource_group.name {
+                    ip_addresses.push(ip.clone());
                 }
             }
+
+            if !ip_addresses.is_empty() {
+                resource_groups.push(IpResultResourceGroup {
+                    resource_group,
+                    ip_addresses,
+                });
+            }
         }
+
+        result.push(IpResult {
+            subscription: subscription.clone(),
+            resource_groups,
+        })
     }
 
-    return Ok(());
+    return Ok(result);
 }
 
-pub fn costs(context: &Context, timeframe: &Timeframe) -> Result<()> {
+#[derive(Serialize)]
+pub struct CostResult {
+    pub subscription: Subscription,
+    pub costs: Vec<Costs>,
+}
+
+pub fn costs(context: &Context, timeframe: &Timeframe) -> Result<Vec<CostResult>> {
+    let mut result = vec![];
+
     let service = &context.service;
-
     let subscriptions = service.get_subscriptions()?;
-
-    let mut total = 0.0;
-    let mut total_currency = None;
-
     for subscription in &subscriptions {
-        println!("{}", subscription.name);
-
-        let mut sum = 0.0;
-        let mut sum_currency = None;
-
         let costs = service.get_costs(&subscription.subscription_id, timeframe)?;
-        for item in &costs {
-            println!(
-                "  {}  {:0.2} {}",
-                item.resource_group, item.costs, item.currency
-            );
-            sum += item.costs;
-            if sum_currency == None {
-                sum_currency = Some(&item.currency);
-            }
-        }
-
-        if let Some(currency) = sum_currency {
-            println!("  sum  {:0.2} {}", sum, currency);
-            total += sum;
-            total_currency = Some(currency.clone());
-        }
+        result.push(CostResult {
+            subscription: subscription.clone(),
+            costs,
+        });
     }
 
-    if let Some(currency) = total_currency {
-        println!("total  {:0.2} {}", total, currency);
-    }
-
-    return Ok(());
+    return Ok(result);
 }
 
-pub fn get(context: &Context, request: &str) -> Result<()> {
-    let result: Value = context.service.get(request, "")?;
-    println!("{}", to_string_pretty(&result)?);
-    return Ok(());
+pub fn get(context: &Context, request: &str) -> Result<Value> {
+    return context.service.get(request, "");
 }
 
-pub fn post(context: &Context, request: &str, body: &str) -> Result<()> {
-    let result: Value = context.service.post(request, "", body)?;
-    println!("{}", to_string_pretty(&result)?);
-    return Ok(());
+pub fn post(context: &Context, request: &str, body: &str) -> Result<Value> {
+    return context.service.post(request, "", body);
 }

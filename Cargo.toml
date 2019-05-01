@@ -1,6 +1,6 @@
 [package]
 name = "azi"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Pascal"]
 edition = "2018"
 
@@ -24,4 +24,4 @@ regex = "1.1"
 reqwest = "0.9"
 serde = "1.0"
 serde_derive = "1.0"
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
