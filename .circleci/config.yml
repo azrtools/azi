@@ -1,0 +1,18 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: rust:1
+    steps:
+      - checkout
+      - run:
+          name: Version information
+          command: rustc --version; cargo --version; rustup --version
+      - run:
+          name: Build release
+          command: cargo build --verbose --all --release
+      - run:
+          name: Run tests
+          command: cargo test --verbose --all
+      - store_artifacts:
+          path: target/release/azi
