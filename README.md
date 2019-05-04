@@ -1,5 +1,9 @@
 # azi
 
+[![Build Status Appveyor](https://img.shields.io/appveyor/ci/pascalgn/azi.svg?style=flat-square&label=appveyor)](https://ci.appveyor.com/project/pascalgn/azi)
+[![Build Status CircleCI](https://img.shields.io/circleci/project/pascalgn/azi.svg?style=flat-square&label=circleci)](https://circleci.com/gh/pascalgn/azi)
+[![License](https://img.shields.io/github/license/pascalgn/azi.svg?style=flat-square)](LICENSE)
+
 Show Azure information.
 
 ## Installation
