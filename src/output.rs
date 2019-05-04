@@ -1,3 +1,4 @@
+use colored::Colorize;
 use serde_json::to_string;
 use serde_json::to_string_pretty;
 use serde_json::Value;
@@ -64,14 +65,18 @@ pub struct TextOutput {}
 impl Output for TextOutput {
     fn print_list_results(&self, results: &Vec<ListResult>) -> Result<()> {
         for result in results {
-            println!("{}", result.subscription.name);
+            println!("{}", result.subscription.name.red());
 
             for resource_group in &result.resource_groups {
-                println!("  {}", resource_group.name);
+                println!("  {}", resource_group.name.blue());
 
                 for resource in &result.resources {
                     if resource.resource_group()? == resource_group.name {
-                        println!("    {} ({})", resource.name, resource.resource_type);
+                        println!(
+                            "    {} {}",
+                            resource.name,
+                            format!("({})", resource.resource_type).dimmed()
+                        );
                     }
                 }
             }
@@ -82,25 +87,45 @@ impl Output for TextOutput {
 
     fn print_domains(&self, domains: &Vec<Domain>) -> Result<()> {
         for domain in domains {
-            println!("{}", domain.name);
+            println!("{}", domain.name.cyan());
+
+            let arrow = "->".dimmed();
 
             let mut depth = 0;
             for entry in &domain.entries {
                 match entry {
                     Some(DnsRecordEntry::CNAME(cname)) => {
-                        println!("{0:1$} -> {2}", "", depth * 4, cname);
+                        println!("{0:1$} {2} {3}", "", depth * 4, arrow, cname);
                         depth += 1;
                     }
-                    None => println!("{0:1$} -> [recursion depth exceeded]", "", depth * 4),
+                    None => println!(
+                        "{0:1$} {2} {3}",
+                        "",
+                        depth * 4,
+                        arrow,
+                        "[recursion depth exceeded]".red()
+                    ),
                     _ => (),
                 }
             }
 
             for ip_address in &domain.ip_addresses {
-                println!("{0:1$} -> {2}", "", depth * 4, ip_address.ip_address);
+                println!(
+                    "{0:1$} {2} {3}",
+                    "",
+                    depth * 4,
+                    arrow,
+                    ip_address.ip_address
+                );
 
                 if let Some(resource_group) = ip_address.resource_group.as_ref() {
-                    println!("{0:1$}     -> {2}", "", depth * 4, resource_group.name);
+                    println!(
+                        "{0:1$}     {2} {3}",
+                        "",
+                        depth * 4,
+                        arrow,
+                        resource_group.name.blue()
+                    );
                 }
             }
         }
@@ -110,17 +135,17 @@ impl Output for TextOutput {
 
     fn print_dns_results(&self, results: &Vec<DnsResult>) -> Result<()> {
         for result in results {
-            println!("{}", result.zone.name);
+            println!("{}", result.zone.name.blue());
 
             for record in &result.records {
-                println!("  {}", record.name);
+                println!("  {}", record.name.cyan());
                 match &record.entry {
                     DnsRecordEntry::A(ip_addresses) => {
                         for ip in ip_addresses {
-                            println!("    A {}", ip);
+                            println!("    {} {}", "A".dimmed(), ip);
                         }
                     }
-                    DnsRecordEntry::CNAME(cname) => println!("    CNAME {}", cname),
+                    DnsRecordEntry::CNAME(cname) => println!("    {} {}", "CNAME".dimmed(), cname),
                 }
             }
         }
@@ -130,10 +155,10 @@ impl Output for TextOutput {
 
     fn print_ip_results(&self, results: &Vec<IpResult>) -> Result<()> {
         for result in results {
-            println!("{}", result.subscription.name);
+            println!("{}", result.subscription.name.red());
 
             for resource_group in &result.resource_groups {
-                println!("  {}", resource_group.resource_group.name);
+                println!("  {}", resource_group.resource_group.name.blue());
 
                 for ip in &resource_group.ip_addresses {
                     println!("    {}", ip.ip_address);
@@ -149,7 +174,7 @@ impl Output for TextOutput {
         let mut total_currency = None;
 
         for result in results {
-            println!("{}", result.subscription.name);
+            println!("{}", result.subscription.name.red());
 
             let mut sum = 0.0;
             let mut sum_currency = None;
@@ -157,7 +182,9 @@ impl Output for TextOutput {
             for item in &result.costs {
                 println!(
                     "  {}  {:0.2} {}",
-                    item.resource_group, item.costs, item.currency
+                    item.resource_group.blue(),
+                    item.costs,
+                    item.currency
                 );
                 sum += item.costs;
                 if sum_currency == None {
@@ -166,14 +193,14 @@ impl Output for TextOutput {
             }
 
             if let Some(currency) = sum_currency {
-                println!("  sum  {:0.2} {}", sum, currency);
+                println!("  {}  {:0.2} {}", "sum".cyan(), sum, currency);
                 total += sum;
                 total_currency = Some(currency.clone());
             }
         }
 
         if let Some(currency) = total_currency {
-            println!("total  {:0.2} {}", total, currency);
+            println!("{}  {:0.2} {}", "total".cyan(), total, currency);
         }
 
         return Ok(());

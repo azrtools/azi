@@ -1,10 +1,3 @@
-extern crate dirs;
-extern crate env_logger;
-extern crate regex;
-extern crate reqwest;
-extern crate serde_derive;
-extern crate serde_json;
-
 #[macro_use]
 extern crate lazy_static;
 

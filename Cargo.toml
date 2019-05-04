@@ -1,6 +1,6 @@
 [package]
 name = "azi"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Pascal"]
 edition = "2018"
 
@@ -16,6 +16,7 @@ name = "azi"
 path = "src/main.rs"
 
 [dependencies]
+colored = "1.8"
 dirs = "1.0"
 env_logger = "0.6"
 lazy_static = "1.3.0"

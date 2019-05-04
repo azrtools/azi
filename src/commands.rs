@@ -243,10 +243,12 @@ pub fn ip(context: &Context) -> Result<Vec<IpResult>> {
             }
         }
 
-        result.push(IpResult {
-            subscription: subscription.clone(),
-            resource_groups,
-        })
+        if !resource_groups.is_empty() {
+            result.push(IpResult {
+                subscription: subscription.clone(),
+                resource_groups,
+            })
+        }
     }
 
     return Ok(result);
