@@ -1,8 +1,11 @@
 use std::error::Error;
+use std::thread::sleep;
+use std::time::Duration;
 
 use reqwest;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::RequestBuilder;
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde_json::from_value;
@@ -60,17 +63,21 @@ impl<'r> Request<'r> {
     }
 }
 
+const CLIENT_ID: &'static str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
+
 pub struct Client {
-    access_token_file: Option<AccessTokenFile>,
+    tenant: Option<String>,
+    access_token_file: AccessTokenFile,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub fn new() -> Client {
-        return Client {
-            access_token_file: AccessTokenFile::new().ok(),
+    pub fn new(tenant: Option<&str>) -> Result<Client> {
+        return Ok(Client {
+            tenant: tenant.map(str::to_string),
+            access_token_file: AccessTokenFile::new(tenant)?,
             client: reqwest::Client::new(),
-        };
+        });
     }
 
     pub fn new_request<'c>(&'c self, url: &'c str, resource: &'c str) -> Request<'c> {
@@ -89,7 +96,7 @@ impl Client {
         let entry = self.get_access_entry(request.resource)?;
         let token: &String = &entry.access_token;
 
-        let (res, json) = self.request_json(request, &token)?;
+        let (res, json) = self.execute_request(request, &token)?;
 
         if res.status().is_success() {
             return self.get_value(&json);
@@ -107,8 +114,8 @@ impl Client {
         if let Some(code) = json["error"]["code"].as_str() {
             if code == "ExpiredAuthenticationToken" {
                 debug!("Auth token expired!");
-                if let Some(entry) = self.refresh_token(request.resource, entry)? {
-                    let (res, json) = self.request_json(request, &entry.access_token)?;
+                if let Some(entry) = self.refresh_token(&entry.resource, entry)? {
+                    let (res, json) = self.execute_request(request, &entry.access_token)?;
                     if res.status().is_success() {
                         return self.get_value(&json);
                     }
@@ -120,30 +127,43 @@ impl Client {
         return Err(HttpClientError.into());
     }
 
+    fn execute_request(&self, request: &Request, token: &str) -> Result<(Response, Value)> {
+        let builder = match request.body {
+            Some(body) => self.client.post(request.url).body(body.to_owned()),
+            None => self.client.get(request.url),
+        };
+
+        return self.request_json(
+            builder
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .header(CONTENT_TYPE, "application/json")
+                .query(&[request.query]),
+        );
+    }
+
     fn get_value(&self, json: &Value) -> Result<Value> {
-        if let Some(value) = json.get("value") {
-            if !value.is_null() {
-                return Ok(value.clone());
-            }
+        let value = &json["value"];
+        if value.is_null() {
+            return Ok(json.clone());
+        } else {
+            return Ok(value.clone());
         }
-        return Ok(json.clone());
     }
 
     fn get_access_entry(&self, resource: &str) -> Result<AccessTokenFileEntry> {
-        let file = self.access_token_file.as_ref().ok_or(HttpClientError)?;
-
-        if let Some(entry) = file.find_entry(resource) {
-            return Ok(entry);
+        if let Some(entry) = self.access_token_file.find_entry(resource) {
+            return Ok(entry.clone());
         }
 
-        if let Some(entry) = file.any_entry() {
+        if let Some(entry) = self.access_token_file.any_entry() {
             debug!("Trying to get access from existing refresh token...");
             if let Some(updated) = self.refresh_token(resource, &entry)? {
                 return Ok(updated);
             }
         }
 
-        return Err(HttpClientError.into());
+        debug!("Trying to get new access token...");
+        return self.request_new_token(resource);
     }
 
     fn refresh_token(
@@ -152,6 +172,8 @@ impl Client {
         entry: &AccessTokenFileEntry,
     ) -> Result<Option<AccessTokenFileEntry>> {
         debug!("Refreshing token for {}", resource);
+
+        trace!("Current token: {}", entry.access_token);
 
         let tenant = entry.tenant().ok_or(HttpClientError)?;
         let client_id = &entry.client_id;
@@ -163,56 +185,109 @@ impl Client {
         );
 
         let refresh_url = format!("https://login.microsoftonline.com/{}/oauth2/token", tenant);
-
-        let mut res = self
-            .client
-            .post(refresh_url.as_str())
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(body)
-            .send()?;
+        let (res, json) = self.request_json(
+            self.client
+                .post(refresh_url.as_str())
+                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(body),
+        )?;
 
         if res.status().is_success() {
-            let json: Value = res.json()?;
-            match json["access_token"].as_str() {
-                Some(token) => {
-                    let updated = AccessTokenFileEntry {
-                        access_token: token.to_string(),
-                        ..(entry.clone())
-                    };
-
-                    if let Some(file) = self.access_token_file.as_ref() {
-                        file.update_entry(resource, &updated)?;
-                    }
-
-                    return Ok(Some(updated));
-                }
-                _ => (),
+            if let Some(token) = json["access_token"].as_str() {
+                let updated = entry.with_token(token.to_string(), resource.to_string());
+                self.access_token_file.update_entry(&updated)?;
+                return Ok(Some(updated));
             }
+        } else if json["error"].as_str() == Some("invalid_grant") {
+            debug!("Refresh token is no longer valid!");
+            return self.request_new_token(resource).map(Some);
         }
 
         return Ok(None);
     }
 
-    fn request_json(&self, request: &Request, token: &str) -> Result<(Response, Value)> {
-        let builder = match request.body {
-            Some(body) => self.client.post(request.url).body(body.to_owned()),
-            None => self.client.get(request.url),
-        };
+    fn request_new_token(&self, resource: &str) -> Result<AccessTokenFileEntry> {
+        let tenant = self.tenant.as_ref().map(String::as_str).unwrap_or("common");
+        let url = format!(
+            "https://login.microsoftonline.com/{}/oauth2/devicecode?api-version=1.0",
+            tenant
+        );
 
-        let mut res = builder
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header(CONTENT_TYPE, "application/json")
-            .query(&[request.query])
-            .send()?;
+        let body = format!("client_id={}&resource={}", CLIENT_ID, resource);
+
+        let (res, json) = self.request_json(
+            self.client
+                .post(url.as_str())
+                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(body),
+        )?;
+
+        if res.status().is_success() {
+            let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
+
+            let message = json["message"].as_str().ok_or(HttpClientError)?;
+            println!("{}", message);
+
+            loop {
+                sleep(Duration::from_millis(5000));
+
+                let url = format!("https://login.microsoftonline.com/{}/oauth2/token", tenant);
+                let body = format!(
+                    "grant_type=device_code&client_id={}&resource={}&code={}",
+                    CLIENT_ID, resource, device_code
+                );
+
+                let (res, json) = self.request_json(
+                    self.client
+                        .post(url.as_str())
+                        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(body),
+                )?;
+
+                if res.status().is_success() {
+                    let entry = AccessTokenFileEntry::parse(json)?;
+                    self.access_token_file.update_entry(&entry)?;
+
+                    if let Some(tenant) = self.tenant.as_ref() {
+                        // the tenant recorded in the file is just the ID, but the tenant given
+                        // via --tenant flag is probably given as name, so make sure we also
+                        // record an entry for the tenant name
+                        let for_tenant = entry.with_tenant(tenant);
+                        self.access_token_file.update_entry(&for_tenant)?;
+                    }
+
+                    return Ok(entry);
+                } else if json["error"].as_str() == Some("authorization_pending") {
+                    debug!("Authorization pending...");
+                } else {
+                    warn!("Unknown error response: {}", json);
+                    break;
+                }
+            }
+        }
+
+        return Err(HttpClientError.into());
+    }
+
+    fn request_json(&self, request: RequestBuilder) -> Result<(Response, Value)> {
+        let mut res = request.send()?;
 
         trace!("Response: {:#?}", res);
-
-        let json: Value = res.json()?;
-        trace!("Response JSON: {:#?}", &json);
 
         if !res.status().is_success() {
             debug!("Request not successful: {}", res.status().as_str());
         }
+
+        let json: Value = match res.json() {
+            Ok(json) => {
+                trace!("Response JSON: {:#?}", &json);
+                json
+            }
+            Err(err) => {
+                trace!("Response JSON could not be parsed: {}", err);
+                Value::Null
+            }
+        };
 
         return Ok((res, json));
     }

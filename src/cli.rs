@@ -35,13 +35,18 @@ const HELP: Flag = ("-h, --help", "Show this help message and exit", false);
 const VERSION: Flag = ("--version", "Show program's version number and exit", false);
 const DEBUG: Flag = ("--debug", "Show debugging output", false);
 const TRACE: Flag = ("--trace", "Show even more debugging output", false);
+const TENANT: Flag = (
+    "-t, --tenant <tenant>",
+    "Set the Active Directory tenant to use",
+    true,
+);
 const OUTPUT: Flag = (
     "-o, --output <format>",
     "Set output format, one of 'text' (default) or 'json'",
     true,
 );
 
-const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, OUTPUT];
+const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, TENANT, OUTPUT];
 
 const LIST: Command = (
     "list",
@@ -110,6 +115,11 @@ pub fn run() {
         }
     };
 
+    if args.has_command_flag(&HELP) {
+        Printer::new().print_command_help(&command);
+        return;
+    }
+
     let mut logger = env_logger::Builder::new();
     if args.has_global_flag(&TRACE) {
         logger.filter(Some("azi"), LevelFilter::Trace);
@@ -119,11 +129,6 @@ pub fn run() {
         logger.filter(Some("azi"), LevelFilter::Info);
     };
     logger.init();
-
-    if args.has_command_flag(&HELP) {
-        Printer::new().print_command_help(&command);
-        return;
-    }
 
     let output: &Output = match args.get_global_flag_arg(&OUTPUT) {
         Some("json") => &JsonOutput {},
@@ -135,12 +140,12 @@ pub fn run() {
         }
     };
 
-    let client = Client::new();
-    let service = Service::new(client);
-
-    let context = Context { service: &service };
-
     let run_command = || -> Result<()> {
+        let client = Client::new(args.get_global_flag_arg(&TENANT))?;
+        let service = Service::new(client);
+
+        let context = Context { service: &service };
+
         match command {
             LIST => {
                 let list_resources = args.has_command_flag(&LIST_RESOURCES);
