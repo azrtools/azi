@@ -45,6 +45,9 @@ pub struct AccessTokenFileEntry {
     token_type: String,
     expires_on: String,
     user_id: String,
+
+    #[serde(rename = "isMRRT")]
+    is_mrrt: bool,
 }
 
 impl AccessTokenFile {
@@ -205,6 +208,7 @@ impl AccessTokenFileEntry {
             refresh_token: to_str!(json["refresh_token"])?,
             token_type: to_str!(json["token_type"])?,
             expires_on: expires_on.to_string(),
+            is_mrrt: true,
             client_id,
             access_token,
             authority,
