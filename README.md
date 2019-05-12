@@ -8,7 +8,10 @@ Show Azure information.
 
 ## Installation
 
+You can download binaries from the [latest release](https://github.com/pascalgn/azi/releases/latest).
 If you have Cargo installed, you can use `cargo install azi`
+
+You can also use the Docker image: `docker run pascalgn/azi --help`
 
 ## Usage
 
