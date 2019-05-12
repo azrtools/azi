@@ -11,7 +11,7 @@ Show Azure information.
 You can download binaries from the [latest release](https://github.com/pascalgn/azi/releases/latest).
 If you have Cargo installed, you can use `cargo install azi`
 
-You can also use the Docker image: `docker run pascalgn/azi --help`
+You can also use the Docker image: `docker run --rm pascalgn/azi --help`
 
 ## Usage
 
@@ -32,6 +32,17 @@ Show DNS entries and resource groups they point to:
 ```
 azi domains
 ```
+
+## Docker
+
+To simply run the command, use `docker run --rm pascalgn/azi`.
+If you want to keep the authentication tokens between runs, use
+
+```
+docker run --rm -v "$HOME/.azure:/home/azi/.azure" pascalgn/azi list
+```
+
+The images are available on [Docker Hub](https://hub.docker.com/r/pascalgn/azi).
 
 ## Helpful links
 
