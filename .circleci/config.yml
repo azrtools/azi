@@ -10,7 +10,7 @@ jobs:
           command: rustc --version; cargo --version; rustup --version
       - run:
           name: Build release
-          command: cargo build --verbose --all --release
+          command: cargo build --verbose --all --release && strip target/release/azi
       - run:
           name: Run tests
           command: cargo test --verbose --all
