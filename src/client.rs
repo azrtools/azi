@@ -1,21 +1,21 @@
-use std::error::Error;
+use std::cell::RefCell;
+use std::io::Read;
+use std::mem::drop;
 use std::thread::sleep;
 use std::time::Duration;
 
-use reqwest;
-use reqwest::header::AUTHORIZATION;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::RequestBuilder;
-use reqwest::Response;
+use curl::easy::Easy;
+use curl::easy::List;
 use serde::de::DeserializeOwned;
+use serde_json::from_slice;
 use serde_json::from_value;
 use serde_json::Value;
+use url::Url;
 
 use crate::auth::AccessTokenFile;
 use crate::auth::AccessTokenFileEntry;
 use crate::error::AppError::HttpClientError;
-
-type Result<T> = std::result::Result<T, Box<Error>>;
+use crate::utils::Result;
 
 pub struct Request<'r> {
     client: &'r Client,
@@ -68,15 +68,17 @@ const CLIENT_ID: &'static str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 pub struct Client {
     tenant: Option<String>,
     access_token_file: AccessTokenFile,
-    client: reqwest::Client,
+    handle: RefCell<Easy>,
 }
 
 impl Client {
     pub fn new(tenant: Option<&str>) -> Result<Client> {
+        let mut handle = Easy::new();
+        handle.useragent("github.com/pascalgn/azi")?;
         return Ok(Client {
             tenant: tenant.map(str::to_string),
             access_token_file: AccessTokenFile::new(tenant)?,
-            client: reqwest::Client::new(),
+            handle: RefCell::new(handle),
         });
     }
 
@@ -91,14 +93,12 @@ impl Client {
     }
 
     fn request(&self, request: &Request) -> Result<Value> {
-        debug!("Requesting: {}", request.url);
-
         let entry = self.get_access_entry(request.resource)?;
         let token: &String = &entry.access_token;
 
-        let (res, json) = self.execute_request(request, &token)?;
+        let (status, json) = self.execute_request(request, &token)?;
 
-        if res.status().is_success() {
+        if status.is_success() {
             return self.get_value(&json);
         } else {
             return self.try_rerequest(&entry, request, &json);
@@ -115,8 +115,8 @@ impl Client {
             if code == "ExpiredAuthenticationToken" {
                 debug!("Auth token expired!");
                 if let Some(entry) = self.refresh_token(&entry.resource, entry)? {
-                    let (res, json) = self.execute_request(request, &entry.access_token)?;
-                    if res.status().is_success() {
+                    let (status, json) = self.execute_request(request, &entry.access_token)?;
+                    if status.is_success() {
                         return self.get_value(&json);
                     }
                 }
@@ -127,18 +127,17 @@ impl Client {
         return Err(HttpClientError.into());
     }
 
-    fn execute_request(&self, request: &Request, token: &str) -> Result<(Response, Value)> {
-        let builder = match request.body {
-            Some(body) => self.client.post(request.url).body(body.to_owned()),
-            None => self.client.get(request.url),
+    fn execute_request(&self, request: &Request, token: &str) -> Result<(Status, Value)> {
+        let (key, value) = request.query;
+        let url = if key.len() > 0 && value.len() > 0 {
+            let mut url = Url::parse(request.url)?;
+            url.query_pairs_mut().append_pair(key, value);
+            url.to_string()
+        } else {
+            request.url.to_owned()
         };
 
-        return self.request_json(
-            builder
-                .header(AUTHORIZATION, format!("Bearer {}", token))
-                .header(CONTENT_TYPE, "application/json")
-                .query(&[request.query]),
-        );
+        return self.execute_raw(&url, Self::headers_json(token)?, request.body);
     }
 
     fn get_value(&self, json: &Value) -> Result<Value> {
@@ -185,14 +184,9 @@ impl Client {
         );
 
         let refresh_url = format!("https://login.microsoftonline.com/{}/oauth2/token", tenant);
-        let (res, json) = self.request_json(
-            self.client
-                .post(refresh_url.as_str())
-                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(body),
-        )?;
+        let (status, json) = self.execute_raw(&refresh_url, Self::headers_form()?, Some(&body))?;
 
-        if res.status().is_success() {
+        if status.is_success() {
             if let Some(token) = json["access_token"].as_str() {
                 let updated = entry.with_token(token.to_string(), resource.to_string());
                 self.access_token_file.update_entry(&updated)?;
@@ -215,14 +209,9 @@ impl Client {
 
         let body = format!("client_id={}&resource={}", CLIENT_ID, resource);
 
-        let (res, json) = self.request_json(
-            self.client
-                .post(url.as_str())
-                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(body),
-        )?;
+        let (status, json) = self.execute_raw(&url, Self::headers_form()?, Some(&body))?;
 
-        if res.status().is_success() {
+        if status.is_success() {
             let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
 
             let message = json["message"].as_str().ok_or(HttpClientError)?;
@@ -237,14 +226,9 @@ impl Client {
                     CLIENT_ID, resource, device_code
                 );
 
-                let (res, json) = self.request_json(
-                    self.client
-                        .post(url.as_str())
-                        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                        .body(body),
-                )?;
+                let (status, json) = self.execute_raw(&url, Self::headers_form()?, Some(&body))?;
 
-                if res.status().is_success() {
+                if status.is_success() {
                     let entry = AccessTokenFileEntry::parse(json)?;
                     self.access_token_file.update_entry(&entry)?;
 
@@ -269,16 +253,62 @@ impl Client {
         return Err(HttpClientError.into());
     }
 
-    fn request_json(&self, request: RequestBuilder) -> Result<(Response, Value)> {
-        let mut res = request.send()?;
+    fn headers_form() -> Result<List> {
+        let mut headers = List::new();
+        headers.append("Content-Type: application/x-www-form-urlencoded")?;
+        return Ok(headers);
+    }
 
-        trace!("Response: {:#?}", res);
+    fn headers_json(token: &str) -> Result<List> {
+        let mut headers = List::new();
+        headers.append(format!("Authorization: Bearer {}", token).as_str())?;
+        headers.append("Content-Type: application/json")?;
+        return Ok(headers);
+    }
 
-        if !res.status().is_success() {
-            debug!("Request not successful: {}", res.status().as_str());
+    fn execute_raw(&self, url: &str, headers: List, body: Option<&str>) -> Result<(Status, Value)> {
+        debug!("Requesting: {}", url);
+
+        trace!("Request body: {:#?}", &body);
+
+        let mut handle = self.handle.try_borrow_mut()?;
+
+        handle.url(url)?;
+        handle.http_headers(headers)?;
+
+        let mut data = body.unwrap_or("").as_bytes();
+
+        if body.is_some() {
+            handle.post(true)?;
+            handle.post_field_size(data.len() as u64)?;
+        } else {
+            handle.get(true)?;
         }
 
-        let json: Value = match res.json() {
+        let mut response: Vec<u8> = vec![];
+        let mut transfer = handle.transfer();
+        transfer.read_function(|buf| Ok(data.read(buf).unwrap_or(0)))?;
+        transfer.write_function(|buf| {
+            response.extend(buf);
+            Ok(buf.len())
+        })?;
+
+        if let Err(err) = transfer.perform() {
+            debug!("Request failed!");
+            return Err(err.into());
+        }
+
+        drop(transfer);
+
+        let status = handle.response_code()?;
+
+        trace!("Response: {}", status);
+
+        if !status.is_success() {
+            debug!("Request not successful: {}", status);
+        }
+
+        let json: Value = match from_slice(response.as_slice()) {
             Ok(json) => {
                 trace!("Response JSON: {:#?}", &json);
                 json
@@ -289,6 +319,18 @@ impl Client {
             }
         };
 
-        return Ok((res, json));
+        return Ok((status, json));
+    }
+}
+
+type Status = u32;
+
+trait StatusExt {
+    fn is_success(&self) -> bool;
+}
+
+impl StatusExt for Status {
+    fn is_success(&self) -> bool {
+        return *self >= 200 && *self < 400;
     }
 }
