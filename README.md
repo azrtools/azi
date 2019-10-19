@@ -47,6 +47,7 @@ The images are available on [Docker Hub](https://hub.docker.com/r/pascalgn/azi).
 ## Helpful links
 
 - https://docs.microsoft.com/en-us/rest/api/azure/
+- https://docs.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-device-code
 - https://docs.microsoft.com/en-us/azure/active-directory/develop/v1-protocols-oauth-code
 
 ## License
