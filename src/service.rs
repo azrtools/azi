@@ -20,6 +20,7 @@ pub struct Service {
     client: Client,
 }
 
+#[derive(Debug)]
 pub enum Timeframe {
     MonthToDate,
     Custom { from: String, to: String },
@@ -70,7 +71,14 @@ impl Service {
 
     pub fn get_subscriptions(&self) -> Result<Vec<Subscription>> {
         let url = "https://management.azure.com/subscriptions?api-version=2016-06-01";
-        return self.client.new_request(url, DEFAULT_RESOURCE).get_list();
+        return self
+            .client
+            .new_request(url, DEFAULT_RESOURCE)
+            .get_list()
+            .map(|mut list: Vec<Subscription>| {
+                list.sort_by(|a, b| a.name.cmp(&b.name));
+                list
+            });
     }
 
     pub fn get_resource_groups(&self, subscription_id: &str) -> Result<Vec<ResourceGroup>> {
@@ -124,9 +132,9 @@ impl Service {
                     row["properties"]["ipAddress"].as_str(),
                 ) {
                     return Some(IpAddress {
-                        id: id.to_string(),
-                        name: name.to_string(),
-                        ip_address: ip_address.to_string(),
+                        id: id.to_owned(),
+                        name: name.to_owned(),
+                        ip_address: ip_address.to_owned(),
                     });
                 } else {
                     trace!("Invalid row, missing id or name: {:?}", row);
@@ -158,7 +166,7 @@ impl Service {
             .filter_map(|row| {
                 let (id, name) =
                     if let (Some(id), Some(name)) = (row["id"].as_str(), row["name"].as_str()) {
-                        (id.to_string(), name.to_string())
+                        (id.to_owned(), name.to_owned())
                     } else {
                         trace!("Invalid row, missing id or name: {:?}", row);
                         return None;
@@ -172,11 +180,11 @@ impl Service {
                     let ip_addresses: Vec<String> = a_records
                         .iter()
                         .filter_map(|row| row["ipv4Address"].as_str())
-                        .map(str::to_string)
+                        .map(str::to_owned)
                         .collect();
                     DnsRecordEntry::A(ip_addresses)
                 } else if let Some(cname) = row["properties"]["CNAMERecord"]["cname"].as_str() {
-                    DnsRecordEntry::CNAME(cname.to_string())
+                    DnsRecordEntry::CNAME(cname.to_owned())
                 } else {
                     trace!("Invalid row, unknown record type: {:?}", row);
                     return None;
@@ -261,9 +269,9 @@ impl Service {
                         arr.get(currency_col).and_then(Value::as_str),
                     ) {
                         return Some(Costs {
-                            resource_group: resource_group.to_string(),
+                            resource_group: resource_group.to_owned(),
                             costs,
-                            currency: currency.to_string(),
+                            currency: currency.to_owned(),
                         });
                     }
                 }

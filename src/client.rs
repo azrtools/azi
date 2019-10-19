@@ -76,7 +76,7 @@ impl Client {
         let mut handle = Easy::new();
         handle.useragent("github.com/pascalgn/azi")?;
         return Ok(Client {
-            tenant: tenant.map(str::to_string),
+            tenant: tenant.map(str::to_owned),
             access_token_file: AccessTokenFile::new(tenant)?,
             handle: RefCell::new(handle),
         });
@@ -112,7 +112,7 @@ impl Client {
         json: &Value,
     ) -> Result<Value> {
         if let Some(code) = json["error"]["code"].as_str() {
-            if code == "ExpiredAuthenticationToken" {
+            if code == "ExpiredAuthenticationToken" || code == "AuthenticationFailed" {
                 debug!("Auth token expired!");
                 if let Some(entry) = self.refresh_token(&entry.resource, entry)? {
                     let (status, json) = self.execute_request(request, &entry.access_token)?;
@@ -124,7 +124,7 @@ impl Client {
                 debug!("Unknown error: {}", code);
             }
         }
-        return Err(HttpClientError.into());
+        Err(HttpClientError.into())
     }
 
     fn execute_request(&self, request: &Request, token: &str) -> Result<(Status, Value)> {
@@ -136,16 +136,15 @@ impl Client {
         } else {
             request.url.to_owned()
         };
-
-        return self.execute_raw(&url, Self::headers_json(token)?, request.body);
+        self.execute_raw(&url, Self::headers_json(token)?, request.body)
     }
 
     fn get_value(&self, json: &Value) -> Result<Value> {
         let value = &json["value"];
         if value.is_null() {
-            return Ok(json.clone());
+            Ok(json.clone())
         } else {
-            return Ok(value.clone());
+            Ok(value.clone())
         }
     }
 
@@ -188,7 +187,7 @@ impl Client {
 
         if status.is_success() {
             if let Some(token) = json["access_token"].as_str() {
-                let updated = entry.with_token(token.to_string(), resource.to_string());
+                let updated = entry.with_token(token.to_owned(), resource.to_owned());
                 self.access_token_file.update_entry(&updated)?;
                 return Ok(Some(updated));
             }

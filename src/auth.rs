@@ -2,8 +2,11 @@ use std::cell::RefCell;
 use std::env::var_os;
 use std::fs::create_dir_all;
 use std::fs::File;
+use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -23,10 +26,11 @@ use crate::error::AppError::AccessTokenFileError;
 use crate::utils::Result;
 
 const ACCESS_TOKENS_PATH: &'static str = ".azure/accessTokens.json";
+const AZURE_PROFILE_PATH: &'static str = ".azure/azureProfile.json";
 const DEFAULT_EXPIRATION: u64 = 60 * 60;
 
 pub struct AccessTokenFile {
-    path: Box<Path>,
+    path: PathBuf,
     entries: RefCell<Vec<AccessTokenFileEntry>>,
     tenant: Option<String>,
 }
@@ -52,60 +56,100 @@ pub struct AccessTokenFileEntry {
 
 impl AccessTokenFile {
     pub fn new(tenant: Option<&str>) -> Result<AccessTokenFile> {
-        let path: Box<Path> = if let Some(ref path) = var_os("AZURE_ACCESS_TOKEN_FILE") {
-            Path::new(path.as_os_str()).into()
+        let path = if let Some(ref path) = var_os("AZURE_ACCESS_TOKEN_FILE") {
+            PathBuf::from(path)
         } else if let Some(ref home_dir) = home_dir() {
-            home_dir.join(ACCESS_TOKENS_PATH).into_boxed_path()
+            home_dir.join(ACCESS_TOKENS_PATH).to_owned()
         } else {
             return Err(AccessTokenFileError.into());
         };
 
-        let json = Self::read_file(&path)?;
-        let tenant = tenant.map(str::to_string);
-        let entries = RefCell::new(Self::parse_arr(json.as_array(), &tenant));
+        let tenant = match tenant {
+            Some(tenant) => Some(tenant.to_owned()),
+            None => Self::read_tenant()?,
+        };
+
+        let entries = RefCell::new(Self::read_entries(&path, &tenant)?);
 
         trace!("Read access token entries: {:#?}", entries);
 
-        return Ok(AccessTokenFile {
+        Ok(AccessTokenFile {
             path,
             tenant,
             entries,
-        });
+        })
+    }
+
+    fn read_tenant() -> Result<Option<String>> {
+        if let Some(ref home_dir) = home_dir() {
+            let path = home_dir.join(AZURE_PROFILE_PATH);
+            if let Some(subscriptions) = Self::read_file(&path)?["subscriptions"].as_array() {
+                for subscription in subscriptions {
+                    if subscription["isDefault"] == Value::Bool(true) {
+                        if let Some(tenant) = subscription["tenantId"].as_str() {
+                            return Ok(Some(tenant.to_owned()));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn read_entries(path: &Path, tenant: &Option<String>) -> Result<Vec<AccessTokenFileEntry>> {
+        if let Some(arr) = Self::read_file(&path)?.as_array() {
+            Ok(Self::parse_arr(arr, tenant))
+        } else {
+            Ok(vec![])
+        }
     }
 
     fn read_file(path: &Path) -> Result<Value> {
         if path.exists() {
             let file = File::open(&path)?;
-            let reader = BufReader::new(file);
-            return Ok(from_reader(reader)?);
+            let reader = Self::skip_bom(BufReader::new(file))?;
+            match from_reader(reader) {
+                Err(e) => {
+                    trace!("Failed to parse file: {}", path.display());
+                    Err(e.into())
+                }
+                Ok(value) => Ok(value),
+            }
         } else {
             debug!("File not found: {}", path.display());
-            return Ok(Value::Array(vec![]));
+            Ok(Value::Null)
         }
     }
 
-    fn parse_arr(arr: Option<&Vec<Value>>, tenant: &Option<String>) -> Vec<AccessTokenFileEntry> {
+    fn skip_bom(mut reader: BufReader<File>) -> Result<BufReader<File>> {
+        let buf = reader.fill_buf()?;
+        if buf.len() >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
+            reader.read_exact(&mut [0; 3])?;
+        }
+        Ok(reader)
+    }
+
+    fn parse_arr(arr: &Vec<Value>, tenant: &Option<String>) -> Vec<AccessTokenFileEntry> {
         let mut entries = vec![];
-        if let Some(arr) = arr {
-            for entry in arr {
-                if let Some(e) = from_value(entry.clone()).ok() {
-                    let e: AccessTokenFileEntry = e;
-                    let match_tenant = match (tenant, e.tenant()) {
-                        (Some(t1), Some(t2)) => t1 == t2,
-                        (Some(_), None) => false,
-                        (None, _) => true,
-                    };
-                    if match_tenant {
-                        entries.push(e);
-                    }
+        for entry in arr {
+            if let Some(e) = from_value(entry.clone()).ok() {
+                let e: AccessTokenFileEntry = e;
+                let match_tenant = match (tenant, e.tenant()) {
+                    (Some(t1), Some(t2)) => t1 == t2,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                if match_tenant {
+                    entries.push(e);
                 }
             }
         }
-        return entries;
+        entries
     }
 
     pub fn any_entry(&self) -> Option<AccessTokenFileEntry> {
-        return self.entries.borrow().first().map(|e| e.clone());
+        self.entries.borrow().first().map(|e| e.clone())
     }
 
     pub fn find_entry(&self, resource: &str) -> Option<AccessTokenFileEntry> {
@@ -115,7 +159,7 @@ impl AccessTokenFile {
             }
         }
         debug!("Did not find a matching entry: {}", resource);
-        return None;
+        None
     }
 
     pub fn update_entry(&self, entry: &AccessTokenFileEntry) -> Result<()> {
@@ -157,7 +201,7 @@ impl AccessTokenFile {
 
             debug!("Updated access token file");
 
-            let entries = Self::parse_arr(Some(arr), &self.tenant);
+            let entries = Self::parse_arr(arr, &self.tenant);
             self.entries.replace(entries);
 
             trace!("Updated access token entries: {:#?}", self.entries);
@@ -165,7 +209,7 @@ impl AccessTokenFile {
             debug!("JSON is not an array, skipping update!");
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -173,7 +217,7 @@ impl AccessTokenFileEntry {
     pub fn parse(json: Value) -> Result<AccessTokenFileEntry> {
         macro_rules! to_str {
             ($a:expr) => {
-                $a.as_str().map(str::to_string).ok_or(AccessTokenFileError)
+                $a.as_str().map(str::to_owned).ok_or(AccessTokenFileError)
             };
         }
 
@@ -203,7 +247,7 @@ impl AccessTokenFileEntry {
             format_rfc3339_seconds(SystemTime::now() + Duration::from_secs(DEFAULT_EXPIRATION))
         };
 
-        return Ok(AccessTokenFileEntry {
+        Ok(AccessTokenFileEntry {
             resource: to_str!(json["resource"])?,
             refresh_token: to_str!(json["refresh_token"])?,
             token_type: to_str!(json["token_type"])?,
@@ -213,26 +257,26 @@ impl AccessTokenFileEntry {
             access_token,
             authority,
             user_id,
-        });
+        })
     }
 
     fn create_authority(tenant: &str) -> String {
-        return format!("https://login.microsoftonline.com/{}", tenant);
+        format!("https://login.microsoftonline.com/{}", tenant)
     }
 
     pub fn with_token(&self, access_token: String, resource: String) -> AccessTokenFileEntry {
-        return AccessTokenFileEntry {
+        AccessTokenFileEntry {
             access_token,
             resource,
             ..(self.clone())
-        };
+        }
     }
 
     pub fn with_tenant(&self, tenant: &str) -> AccessTokenFileEntry {
-        return AccessTokenFileEntry {
+        AccessTokenFileEntry {
             authority: Self::create_authority(tenant),
             ..(self.clone())
-        };
+        }
     }
 
     pub fn tenant(&self) -> Option<&str> {
@@ -243,9 +287,9 @@ impl AccessTokenFileEntry {
     }
 
     fn match_key(&self, json: &Value) -> bool {
-        return json["_authority"].as_str() == Some(&self.authority)
+        json["_authority"].as_str() == Some(&self.authority)
             && json["_clientId"].as_str() == Some(&self.client_id)
-            && json["resource"].as_str() == Some(&self.resource);
+            && json["resource"].as_str() == Some(&self.resource)
     }
 }
 

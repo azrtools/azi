@@ -50,10 +50,12 @@ const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, TENANT, OUTPUT];
 
 const LIST: Command = (
     "list",
-    "List existing resource groups",
-    &[HELP, LIST_RESOURCES],
+    "List existing resource groups and resources",
+    &[HELP, LIST_ID, LIST_RESOURCES, LIST_FILTER],
 );
 const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources", false);
+const LIST_ID: Flag = ("--id", "Also display resource IDs", false);
+const LIST_FILTER: Flag = ("[<filter>]", "Filter resources by name", false);
 
 const DOMAINS: Command = (
     "domains",
@@ -148,9 +150,10 @@ pub fn run() {
 
         match command {
             LIST => {
+                let id = args.has_command_flag(&LIST_ID);
                 let list_resources = args.has_command_flag(&LIST_RESOURCES);
-                let result = list(&context, list_resources)?;
-                output.print_list_results(&result)?;
+                let result = list(&context, list_resources, args.get_arg_opt(0))?;
+                output.print_list_results(&result, id)?;
             }
             DOMAINS => {
                 let result = domains(&context, args.get_arg_opt(0))?;
@@ -188,8 +191,18 @@ pub fn run() {
                             from: format!("{:04}-{:02}-{:02}", year, month, day),
                             to: format!("{:04}-{:02}-{:02}", year, month, day),
                         });
+                    } else if period.len() == 13 && &period[6..7] == "-" {
+                        let from_year: u32 = period[0..4].parse()?;
+                        let from_month: u32 = period[4..6].parse()?;
+                        let to_year: u32 = period[7..11].parse()?;
+                        let to_month: u32 = period[11..13].parse()?;
+                        let to_days = days_of_month(to_year, to_month)?;
+                        return Ok(Timeframe::Custom {
+                            from: format!("{:04}-{:02}-01", from_year, from_month),
+                            to: format!("{:04}-{:02}-{:02}", to_year, to_month, to_days),
+                        });
                     } else {
-                        return Err(Box::from("invalid length!"));
+                        return Err(Box::from("invalid period!"));
                     }
                 }
                 let result = match args.get_arg_opt(0) {
@@ -272,7 +285,7 @@ impl Args {
             if let Some(flag) = found {
                 if flag.2 {
                     if let Some(&arg) = it.next() {
-                        return Ok((*flag, arg.to_string()));
+                        return Ok((*flag, arg.to_owned()));
                     } else {
                         return Err(parse_error!("missing argument for {}", long_flag(flag)));
                     }
@@ -287,14 +300,14 @@ impl Args {
         let mut it = args.iter();
         while let Some(&arg) = it.next() {
             if double_dash {
-                command_args.push(arg.to_string());
+                command_args.push(arg.to_owned());
             } else if arg == "--" {
                 double_dash = true;
             } else if let Some(command) = command {
                 if arg.starts_with("-") {
                     command_flags.push(parse_flag(command.2, arg, &mut it)?);
                 } else {
-                    command_args.push(arg.to_string());
+                    command_args.push(arg.to_owned());
                 }
             } else {
                 if arg.starts_with("-") {
@@ -444,7 +457,15 @@ impl Printer {
         }
 
         for flag in flags {
-            self.print_prefix(&format!("  {0:1$}    ", flag.0, max_len));
+            if flag.0.starts_with("[") {
+                self.print_prefix(&format!(
+                    "  {0:1$}    ",
+                    &flag.0[1..flag.0.len() - 1],
+                    max_len
+                ));
+            } else {
+                self.print_prefix(&format!("  {0:1$}    ", flag.0, max_len));
+            }
             self.print_text(flag.1);
         }
     }

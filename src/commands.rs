@@ -28,25 +28,53 @@ pub struct ListResult {
     pub resources: Vec<Resource>,
 }
 
-pub fn list(context: &Context, list_resources: bool) -> Result<Vec<ListResult>> {
+pub fn list(
+    context: &Context,
+    list_resources: bool,
+    filter: Option<&String>,
+) -> Result<Vec<ListResult>> {
     let service = &context.service;
 
     let mut subscriptions = vec![];
 
     for subscription in service.get_subscriptions()? {
-        let resource_groups = service.get_resource_groups(&subscription.subscription_id)?;
+        let mut resource_groups = service.get_resource_groups(&subscription.subscription_id)?;
+        if !list_resources {
+            if let Some(filter) = filter {
+                resource_groups.retain(|group| group.name.contains(filter));
+            }
+        }
 
         let resources = if list_resources {
-            service.get_resources(&subscription.subscription_id)?
+            let mut resources = service.get_resources(&subscription.subscription_id)?;
+            if let Some(filter) = filter {
+                resources.retain(|resource| resource.name.contains(filter));
+
+                resource_groups.retain(|group| {
+                    for resource in &resources {
+                        if let Ok(resource_group) = resource.resource_group() {
+                            if resource_group == group.name {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                });
+            }
+            resources
         } else {
             vec![]
         };
 
-        subscriptions.push(ListResult {
-            subscription,
-            resource_groups,
-            resources,
-        })
+        if (list_resources && !resources.is_empty())
+            || (!list_resources && !resource_groups.is_empty())
+        {
+            subscriptions.push(ListResult {
+                subscription,
+                resource_groups,
+                resources,
+            });
+        }
     }
 
     return Ok(subscriptions);
@@ -266,7 +294,9 @@ pub fn costs(context: &Context, timeframe: &Timeframe) -> Result<Vec<CostResult>
     let service = &context.service;
     let subscriptions = service.get_subscriptions()?;
     for subscription in &subscriptions {
-        let costs = service.get_costs(&subscription.subscription_id, timeframe)?;
+        let costs = service
+            .get_costs(&subscription.subscription_id, timeframe)
+            .unwrap_or(vec![]);
         result.push(CostResult {
             subscription: subscription.clone(),
             costs,

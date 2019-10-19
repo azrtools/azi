@@ -13,7 +13,7 @@ use crate::object::Identifiable;
 use crate::utils::Result;
 
 pub trait Output {
-    fn print_list_results(&self, results: &Vec<ListResult>) -> Result<()>;
+    fn print_list_results(&self, results: &Vec<ListResult>, id: bool) -> Result<()>;
 
     fn print_domains(&self, domains: &Vec<Domain>) -> Result<()>;
 
@@ -29,7 +29,7 @@ pub trait Output {
 pub struct JsonOutput {}
 
 impl Output for JsonOutput {
-    fn print_list_results(&self, results: &Vec<ListResult>) -> Result<()> {
+    fn print_list_results(&self, results: &Vec<ListResult>, _: bool) -> Result<()> {
         println!("{}", to_string_pretty(results)?);
         return Ok(());
     }
@@ -63,20 +63,37 @@ impl Output for JsonOutput {
 pub struct TextOutput {}
 
 impl Output for TextOutput {
-    fn print_list_results(&self, results: &Vec<ListResult>) -> Result<()> {
+    fn print_list_results(&self, results: &Vec<ListResult>, id: bool) -> Result<()> {
         for result in results {
-            println!("{}", result.subscription.name.red());
+            if id {
+                println!(
+                    "{} {}",
+                    result.subscription.name.red(),
+                    format!("({})", result.subscription.subscription_id).dimmed()
+                );
+            } else {
+                println!("{}", result.subscription.name.red());
+            }
 
             for resource_group in &result.resource_groups {
                 println!("  {}", resource_group.name.blue());
 
                 for resource in &result.resources {
                     if resource.resource_group()? == resource_group.name {
-                        println!(
-                            "    {} {}",
-                            resource.name,
-                            format!("({})", resource.resource_type).dimmed()
-                        );
+                        if id {
+                            println!(
+                                "    {} {} {}",
+                                resource.name,
+                                format!("({})", resource.resource_type).dimmed(),
+                                format!("({})", resource.id).dimmed()
+                            );
+                        } else {
+                            println!(
+                                "    {} {}",
+                                resource.name,
+                                format!("({})", resource.resource_type).dimmed()
+                            );
+                        }
                     }
                 }
             }

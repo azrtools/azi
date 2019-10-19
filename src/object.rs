@@ -17,8 +17,8 @@ pub trait Identifiable {
             static ref SUBSCRIPTION_RE: Regex = Regex::new(r"^/subscriptions/([^/]+)").unwrap();
         }
         match SUBSCRIPTION_RE.captures(self.id()) {
-            Some(captures) => return Ok(captures.get(1).unwrap().as_str()),
-            None => return Err(ParseError("invalid id!".to_owned()).into()),
+            Some(captures) => Ok(captures.get(1).unwrap().as_str()),
+            None => Err(ParseError("invalid id!".to_owned()).into()),
         }
     }
 
@@ -27,8 +27,8 @@ pub trait Identifiable {
             static ref RESOURCE_GROUP_RE: Regex = Regex::new(r"/resourceGroups/([^/]+)").unwrap();
         }
         match RESOURCE_GROUP_RE.captures(self.id()) {
-            Some(captures) => return Ok(captures.get(1).unwrap().as_str()),
-            None => return Err(ParseError("invalid id!".to_owned()).into()),
+            Some(captures) => Ok(captures.get(1).unwrap().as_str()),
+            None => Err(ParseError("invalid id!".to_owned()).into()),
         }
     }
 }
@@ -36,10 +36,10 @@ pub trait Identifiable {
 macro_rules! object {
     ($($name:ident),*) => (
         $(impl Named for $name {
-            fn name(&self) -> &String { return &self.name; }
+            fn name(&self) -> &String { &self.name }
         }
         impl Identifiable for $name {
-            fn id(&self) -> &String { return &self.id; }
+            fn id(&self) -> &String { &self.id }
         })*
     )
 }
@@ -111,7 +111,7 @@ mod tests {
 
     impl Identifiable for TestIdentifiable {
         fn id(&self) -> &String {
-            return &self.id;
+            &self.id
         }
     }
 
