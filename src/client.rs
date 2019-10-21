@@ -75,11 +75,51 @@ impl Client {
     pub fn new(tenant: Option<&str>) -> Result<Client> {
         let mut handle = Easy::new();
         handle.useragent("github.com/pascalgn/azi")?;
+
+        let tenant_id = tenant.and_then(|t| Self::get_tenant_id(&mut handle, t));
+        let tenant = tenant_id.as_ref().map(String::as_ref).or(tenant);
+
         return Ok(Client {
             tenant: tenant.map(str::to_owned),
             access_token_file: AccessTokenFile::new(tenant)?,
             handle: RefCell::new(handle),
         });
+    }
+
+    fn get_tenant_id(handle: &mut Easy, tenant: &str) -> Option<String> {
+        if tenant.contains("-") {
+            // tenant names cannot contain "-", so it's probably already an ID
+            return Some(tenant.to_owned());
+        }
+
+        let url = format!(
+            "https://login.microsoftonline.com/{}/.well-known/openid-configuration",
+            tenant
+        );
+
+        let (_, json) = match execute(handle, &url, List::new(), None) {
+            Ok(result) => result,
+            Err(err) => {
+                debug!("Request failed: {}", err);
+                return None;
+            }
+        };
+
+        if let Some(issuer) = json.get("issuer").and_then(Value::as_str) {
+            if let Ok(url) = Url::parse(issuer) {
+                if let Some(mut path_segments) = url.path_segments() {
+                    if let Some(tenant_id) = path_segments.next() {
+                        if tenant_id.len() == 36 {
+                            debug!("Mapped {} to {}", tenant, tenant_id);
+                            return Some(tenant_id.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!("Could not map to tenant ID: {}", tenant);
+        None
     }
 
     pub fn new_request<'c>(&'c self, url: &'c str, resource: &'c str) -> Request<'c> {
@@ -266,60 +306,68 @@ impl Client {
     }
 
     fn execute_raw(&self, url: &str, headers: List, body: Option<&str>) -> Result<(Status, Value)> {
-        debug!("Requesting: {}", url);
-
-        trace!("Request body: {:#?}", &body);
-
         let mut handle = self.handle.try_borrow_mut()?;
-
-        handle.url(url)?;
-        handle.http_headers(headers)?;
-
-        let mut data = body.unwrap_or("").as_bytes();
-
-        if body.is_some() {
-            handle.post(true)?;
-            handle.post_field_size(data.len() as u64)?;
-        } else {
-            handle.get(true)?;
-        }
-
-        let mut response: Vec<u8> = vec![];
-        let mut transfer = handle.transfer();
-        transfer.read_function(|buf| Ok(data.read(buf).unwrap_or(0)))?;
-        transfer.write_function(|buf| {
-            response.extend(buf);
-            Ok(buf.len())
-        })?;
-
-        if let Err(err) = transfer.perform() {
-            debug!("Request failed!");
-            return Err(err.into());
-        }
-
-        drop(transfer);
-
-        let status = handle.response_code()?;
-
-        trace!("Response: {}", status);
-
-        if !status.is_success() {
-            debug!("Request not successful: {}", status);
-        }
-
-        let json: Value = match from_slice(response.as_slice()) {
-            Ok(json) => {
-                trace!("Response JSON: {:#?}", &json);
-                json
-            }
-            Err(err) => {
-                trace!("Response JSON could not be parsed: {}", err);
-                Value::Null
-            }
-        };
-
-        return Ok((status, json));
+        return execute(&mut handle, url, headers, body);
     }
+}
+
+fn execute(
+    handle: &mut Easy,
+    url: &str,
+    headers: List,
+    body: Option<&str>,
+) -> Result<(Status, Value)> {
+    debug!("Requesting: {}", url);
+
+    trace!("Request body: {:#?}", &body);
+
+    handle.url(url)?;
+    handle.http_headers(headers)?;
+
+    let mut data = body.unwrap_or("").as_bytes();
+
+    if body.is_some() {
+        handle.post(true)?;
+        handle.post_field_size(data.len() as u64)?;
+    } else {
+        handle.get(true)?;
+    }
+
+    let mut response: Vec<u8> = vec![];
+    let mut transfer = handle.transfer();
+    transfer.read_function(|buf| Ok(data.read(buf).unwrap_or(0)))?;
+    transfer.write_function(|buf| {
+        response.extend(buf);
+        Ok(buf.len())
+    })?;
+
+    if let Err(err) = transfer.perform() {
+        debug!("Request failed!");
+        return Err(err.into());
+    }
+
+    drop(transfer);
+
+    let status = handle.response_code()?;
+
+    trace!("Response: {}", status);
+
+    if !status.is_success() {
+        debug!("Request not successful: {}", status);
+    }
+
+    let json: Value = match from_slice(response.as_slice()) {
+        Ok(json) => {
+            trace!("Response JSON: {:#?}", &json);
+            json
+        }
+        Err(err) => {
+            trace!("Response JSON could not be parsed: {}", err);
+            Value::Null
+        }
+    };
+
+    return Ok((status, json));
 }
 
 type Status = u32;
