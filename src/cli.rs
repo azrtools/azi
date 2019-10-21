@@ -87,6 +87,8 @@ const COMMANDS: &[Command] = &[LIST, DOMAINS, DNS, IP, COSTS, GET, POST];
 
 const MAX_COLUMN: usize = 80;
 
+const PROGRAM_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
 macro_rules! parse_error {
     ($($arg:tt)*) => (Box::<Error>::from(ParseError(format!($($arg)*))))
 }
@@ -105,6 +107,11 @@ pub fn run() {
 
     if args.has_global_flag(&HELP) {
         Printer::new().print_help();
+        return;
+    }
+
+    if args.has_global_flag(&VERSION) {
+        Printer::new().print_version();
         return;
     }
 
@@ -398,6 +405,11 @@ impl Printer {
 
         self.println();
         self.print_commands(COMMANDS);
+    }
+
+    fn print_version(&mut self) {
+        self.print(PROGRAM_VERSION);
+        self.println();
     }
 
     fn print_usage(&mut self) {
