@@ -254,7 +254,7 @@ impl Client {
             let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
 
             let message = json["message"].as_str().ok_or(HttpClientError)?;
-            println!("{}", message);
+            eprintln!("{}", message);
 
             loop {
                 sleep(Duration::from_millis(5000));
