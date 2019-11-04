@@ -163,7 +163,10 @@ impl AccessTokenFile {
     }
 
     pub fn update_entry(&self, entry: &AccessTokenFileEntry) -> Result<()> {
-        let mut json = Self::read_file(self.path.as_ref())?;
+        let mut json = match Self::read_file(self.path.as_ref())? {
+            Value::Null => Value::Array(vec![]),
+            json => json,
+        };
         if let Some(arr) = json.as_array_mut() {
             let mut updated = false;
             for e in arr.iter_mut() {
