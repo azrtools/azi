@@ -2,6 +2,7 @@
 
 [![Build Status Appveyor](https://img.shields.io/appveyor/ci/pascalgn/azi.svg?style=flat-square&label=appveyor)](https://ci.appveyor.com/project/pascalgn/azi)
 [![Build Status CircleCI](https://img.shields.io/circleci/project/pascalgn/azi.svg?style=flat-square&label=circleci)](https://circleci.com/gh/pascalgn/azi)
+[![Build Status Docker](https://img.shields.io/docker/cloud/build/pascalgn/azi.svg?style=flat-square)](https://hub.docker.com/r/pascalgn/azi/)
 [![License](https://img.shields.io/github/license/pascalgn/azi.svg?style=flat-square)](LICENSE)
 
 Show Azure information.
@@ -38,8 +39,11 @@ azi domains
 To simply run the command, use `docker run --rm pascalgn/azi`.
 If you want to keep the authentication tokens between runs, use
 
-```
-docker run --rm -v "$HOME/.azure:/home/azi/.azure" pascalgn/azi list
+```sh
+docker volume create azi
+docker run --rm --mount source=azi-tmp,target=/home/azi pascalgn/azi list
+docker run --rm --mount source=azi-tmp,target=/home/azi pascalgn/azi dns
+docker volume rm azi
 ```
 
 The images are available on [Docker Hub](https://hub.docker.com/r/pascalgn/azi).
@@ -52,4 +56,4 @@ The images are available on [Docker Hub](https://hub.docker.com/r/pascalgn/azi).
 
 ## License
 
-Apache-2.0
+[Apache-2.0](LICENSE)
