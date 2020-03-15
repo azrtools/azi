@@ -12,7 +12,7 @@ if [[ -z "${GITHUB_TOKEN}" ]]; then
     exit 1
 fi
 
-REPO="pascalgn/azi"
+REPO="azrtools/azi"
 
 mkdir -p target
 
