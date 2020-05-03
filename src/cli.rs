@@ -90,7 +90,7 @@ const MAX_COLUMN: usize = 80;
 const PROGRAM_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 macro_rules! parse_error {
-    ($($arg:tt)*) => (Box::<Error>::from(ParseError(format!($($arg)*))))
+    ($($arg:tt)*) => (Box::<dyn Error>::from(ParseError(format!($($arg)*))))
 }
 
 pub fn run() {
@@ -139,7 +139,7 @@ pub fn run() {
     };
     logger.init();
 
-    let output: &Output = match args.get_global_flag_arg(&OUTPUT) {
+    let output: &dyn Output = match args.get_global_flag_arg(&OUTPUT) {
         Some("json") => &JsonOutput {},
         Some("text") | None => &TextOutput {},
         Some(arg) => {

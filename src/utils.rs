@@ -3,7 +3,7 @@ use std::ffi::OsString;
 
 const DAYS: &[u32] = &[31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-pub type Result<T> = std::result::Result<T, Box<Error>>;
+pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub fn convert_str(os: OsString) -> String {
     match os.as_os_str().to_str() {

@@ -26,7 +26,7 @@ pub enum Timeframe {
     Custom { from: String, to: String },
 }
 
-type Result<T> = std::result::Result<T, Box<Error>>;
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const DEFAULT_PREFIX: &'static str = "https://management.azure.com/";
 const DEFAULT_RESOURCE: &'static str = "https://management.core.windows.net/";

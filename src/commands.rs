@@ -117,8 +117,10 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
         let groups = service.get_resource_groups(&subscription.subscription_id)?;
         let ips = service.get_ip_addresses(&subscription.subscription_id)?;
         for ip in ips {
-            let group_name = ip.resource_group()?;
-            let group = groups.iter().find(|group| group.name == group_name);
+            let group_name = ip.resource_group()?.to_lowercase();
+            let group = groups
+                .iter()
+                .find(|group| group.name.to_lowercase() == group_name);
             if let Some(group) = group {
                 ip_to_group.insert(ip.ip_address, group.clone());
             }
