@@ -2,7 +2,7 @@
 
 [![Build Status Appveyor](https://img.shields.io/appveyor/ci/pascalgn/azi.svg?style=flat-square&label=appveyor)](https://ci.appveyor.com/project/pascalgn/azi)
 [![Build Status CircleCI](https://img.shields.io/circleci/project/azrtools/azi.svg?style=flat-square&label=circleci)](https://circleci.com/gh/azrtools/azi)
-[![Build Status Docker](https://img.shields.io/docker/cloud/build/azrtools/azi.svg?style=flat-square)](https://hub.docker.com/r/azrtools/azi/)
+[![Build Status Docker](https://img.shields.io/docker/cloud/automated/azrtools/azi.svg?style=flat-square)](https://hub.docker.com/r/azrtools/azi/)
 [![License](https://img.shields.io/github/license/azrtools/azi.svg?style=flat-square)](LICENSE)
 
 Show Azure information.
