@@ -12,6 +12,7 @@ mod error;
 mod object;
 mod output;
 mod service;
+mod tenant;
 mod utils;
 
 use cli::run;

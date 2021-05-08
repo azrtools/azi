@@ -13,8 +13,10 @@ use serde_json::Value;
 use url::Url;
 
 use crate::auth::AccessTokenFile;
-use crate::auth::AccessTokenFileEntry;
+use crate::auth::TokenSet;
 use crate::error::AppError::HttpClientError;
+use crate::error::AppError::UnexpectedJson;
+use crate::tenant::Tenant;
 use crate::utils::Result;
 
 pub struct Request<'r> {
@@ -66,8 +68,9 @@ impl<'r> Request<'r> {
 const CLIENT_ID: &'static str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 
 pub struct Client {
-    tenant: Option<String>,
+    tenant: RefCell<Tenant>,
     access_token_file: AccessTokenFile,
+    token_sets: RefCell<Vec<TokenSet>>,
     handle: RefCell<Easy>,
 }
 
@@ -76,50 +79,24 @@ impl Client {
         let mut handle = Easy::new();
         handle.useragent("github.com/pascalgn/azi")?;
 
-        let tenant_id = tenant.and_then(|t| Self::get_tenant_id(&mut handle, t));
-        let tenant = tenant_id.as_ref().map(String::as_ref).or(tenant);
-
-        return Ok(Client {
-            tenant: tenant.map(str::to_owned),
-            access_token_file: AccessTokenFile::new(tenant)?,
-            handle: RefCell::new(handle),
-        });
-    }
-
-    fn get_tenant_id(handle: &mut Easy, tenant: &str) -> Option<String> {
-        if tenant.contains("-") {
-            // tenant names cannot contain "-", so it's probably already an ID
-            return Some(tenant.to_owned());
-        }
-
-        let url = format!(
-            "https://login.microsoftonline.com/{}/.well-known/openid-configuration",
-            tenant
-        );
-
-        let (_, json) = match execute(handle, &url, List::new(), None) {
-            Ok(result) => result,
-            Err(err) => {
-                debug!("Request failed: {}", err);
-                return None;
-            }
+        let tenant = match tenant {
+            Some(tenant) => Tenant::from_name(tenant, |url| {
+                execute(&mut handle, url, List::new(), None).map(|res| res.1)
+            })?,
+            None => Tenant::read_default_tenant()?.unwrap_or(Tenant::common()),
         };
 
-        if let Some(issuer) = json.get("issuer").and_then(Value::as_str) {
-            if let Ok(url) = Url::parse(issuer) {
-                if let Some(mut path_segments) = url.path_segments() {
-                    if let Some(tenant_id) = path_segments.next() {
-                        if tenant_id.len() == 36 {
-                            debug!("Mapped {} to {}", tenant, tenant_id);
-                            return Some(tenant_id.to_owned());
-                        }
-                    }
-                }
-            }
-        }
+        let access_token_file = AccessTokenFile::new()?;
+        let token_sets = access_token_file.read_tokens()?;
 
-        debug!("Could not map to tenant ID: {}", tenant);
-        None
+        debug!("Client created with tenant: {}", tenant.id);
+
+        Ok(Client {
+            tenant: RefCell::new(tenant),
+            access_token_file,
+            token_sets: RefCell::new(token_sets),
+            handle: RefCell::new(handle),
+        })
     }
 
     pub fn new_request<'c>(&'c self, url: &'c str, resource: &'c str) -> Request<'c> {
@@ -133,41 +110,41 @@ impl Client {
     }
 
     fn request(&self, request: &Request) -> Result<Value> {
-        let entry = self.get_access_entry(request.resource)?;
-        let token: &String = &entry.access_token;
+        let token_set = self.get_token_set(request.resource)?;
 
-        let (status, json) = self.execute_request(request, &token)?;
+        let (status, json) = self.execute_request(request, &token_set)?;
 
         if status.is_success() {
             return self.get_value(&json);
         } else {
-            return self.try_rerequest(&entry, request, &json);
+            return self.try_rerequest(&token_set, request, &json);
         }
     }
 
     fn try_rerequest(
         &self,
-        entry: &AccessTokenFileEntry,
+        token_set: &TokenSet,
         request: &Request,
         json: &Value,
     ) -> Result<Value> {
         if let Some(code) = json["error"]["code"].as_str() {
             if code == "ExpiredAuthenticationToken" || code == "AuthenticationFailed" {
                 debug!("Auth token expired!");
-                if let Some(entry) = self.refresh_token(&entry.resource, entry)? {
-                    let (status, json) = self.execute_request(request, &entry.access_token)?;
-                    if status.is_success() {
-                        return self.get_value(&json);
-                    }
+                let token_set = self.refresh_token(request.resource, token_set)?;
+                let (status, json) = self.execute_request(request, &token_set)?;
+                if status.is_success() {
+                    return self.get_value(&json);
+                } else {
+                    return Err(HttpClientError.into());
                 }
             } else {
                 debug!("Unknown error: {}", code);
             }
         }
-        Err(HttpClientError.into())
+        Err(UnexpectedJson(json.clone()).into())
     }
 
-    fn execute_request(&self, request: &Request, token: &str) -> Result<(Status, Value)> {
+    fn execute_request(&self, request: &Request, tokens: &TokenSet) -> Result<(Status, Value)> {
         let (key, value) = request.query;
         let url = if key.len() > 0 && value.len() > 0 {
             let mut url = Url::parse(request.url)?;
@@ -176,7 +153,8 @@ impl Client {
         } else {
             request.url.to_owned()
         };
-        self.execute_raw(&url, Self::headers_json(token)?, request.body)
+        let access_token = tokens.access_token.token();
+        self.execute_raw(&url, Self::headers_json(access_token)?, request.body)
     }
 
     fn get_value(&self, json: &Value) -> Result<Value> {
@@ -188,62 +166,75 @@ impl Client {
         }
     }
 
-    fn get_access_entry(&self, resource: &str) -> Result<AccessTokenFileEntry> {
-        if let Some(entry) = self.access_token_file.find_entry(resource) {
-            return Ok(entry.clone());
+    fn get_token_set(&self, resource: &str) -> Result<TokenSet> {
+        let authority = {
+            let tenant = self.tenant.try_borrow()?;
+            tenant.authority()
+        };
+
+        if let Some(token_set) = {
+            let token_sets = self.token_sets.try_borrow()?;
+            TokenSet::find(&token_sets, &authority, resource)
+        } {
+            if token_set.access_token.is_expired() {
+                trace!("Found expired token set: {:?}", token_set);
+                return Ok(self.refresh_token(resource, &token_set)?);
+            } else {
+                trace!("Found valid token set: {:?}", token_set);
+                return Ok(token_set.clone());
+            }
         }
 
-        if let Some(entry) = self.access_token_file.any_entry() {
+        if let Some(token_set) = {
+            let token_sets = self.token_sets.try_borrow()?;
+            TokenSet::find_any(&token_sets, &authority)
+        } {
             debug!("Trying to get access from existing refresh token...");
-            if let Some(updated) = self.refresh_token(resource, &entry)? {
-                return Ok(updated);
-            }
+            return Ok(self.refresh_token(resource, &token_set)?);
         }
 
         debug!("Trying to get new access token...");
         return self.request_new_token(resource);
     }
 
-    fn refresh_token(
-        &self,
-        resource: &str,
-        entry: &AccessTokenFileEntry,
-    ) -> Result<Option<AccessTokenFileEntry>> {
+    fn refresh_token(&self, resource: &str, token_set: &TokenSet) -> Result<TokenSet> {
         debug!("Refreshing token for {}", resource);
 
-        trace!("Current token: {}", entry.access_token);
+        trace!("Current token: {:?}", token_set);
 
-        let tenant = entry.tenant().ok_or(HttpClientError)?;
-        let client_id = &entry.client_id;
-        let refresh_token = &entry.refresh_token;
+        let tenant_id = {
+            let tenant = self.tenant.try_borrow()?;
+            tenant.id.clone()
+        };
 
         let body = format!(
             "client_id={}&refresh_token={}&grant_type=refresh_token&resource={}",
-            client_id, refresh_token, resource
+            CLIENT_ID, token_set.refresh_token, resource
         );
-
-        let refresh_url = format!("https://login.microsoftonline.com/{}/oauth2/token", tenant);
+        let refresh_url = format!(
+            "https://login.microsoftonline.com/{}/oauth2/token",
+            tenant_id
+        );
         let (status, json) = self.execute_raw(&refresh_url, Self::headers_form()?, Some(&body))?;
 
         if status.is_success() {
-            if let Some(token) = json["access_token"].as_str() {
-                let updated = entry.with_token(token.to_owned(), resource.to_owned());
-                self.access_token_file.update_entry(&updated)?;
-                return Ok(Some(updated));
-            }
+            let token_set = TokenSet::from_json(&json)?;
+            self.update_tokens(&token_set)?;
+            return Ok(token_set);
         } else if json["error"].as_str() == Some("invalid_grant") {
             debug!("Refresh token is no longer valid!");
-            return self.request_new_token(resource).map(Some);
+            return Ok(self.request_new_token(resource)?);
+        } else {
+            return Err(UnexpectedJson(json).into());
         }
-
-        return Ok(None);
     }
 
-    fn request_new_token(&self, resource: &str) -> Result<AccessTokenFileEntry> {
-        let tenant = self.tenant.as_ref().map(String::as_str).unwrap_or("common");
+    fn request_new_token(&self, resource: &str) -> Result<TokenSet> {
+        let tenant = self.tenant.try_borrow()?;
+
         let url = format!(
             "https://login.microsoftonline.com/{}/oauth2/devicecode?api-version=1.0",
-            tenant
+            tenant.id
         );
 
         let body = format!("client_id={}&resource={}", CLIENT_ID, resource);
@@ -259,27 +250,26 @@ impl Client {
             loop {
                 sleep(Duration::from_millis(5000));
 
-                let url = format!("https://login.microsoftonline.com/{}/oauth2/token", tenant);
+                let url = format!(
+                    "https://login.microsoftonline.com/{}/oauth2/token",
+                    tenant.id
+                );
                 let body = format!(
                     "grant_type=device_code&client_id={}&resource={}&code={}",
                     CLIENT_ID, resource, device_code
                 );
-
                 let (status, json) = self.execute_raw(&url, Self::headers_form()?, Some(&body))?;
 
                 if status.is_success() {
-                    let entry = AccessTokenFileEntry::parse(json)?;
-                    self.access_token_file.update_entry(&entry)?;
+                    let token_set = TokenSet::from_json(&json)?;
+                    self.update_tokens(&token_set)?;
 
-                    if let Some(tenant) = self.tenant.as_ref() {
-                        // the tenant recorded in the file is just the ID, but the tenant given
-                        // via --tenant flag is probably given as name, so make sure we also
-                        // record an entry for the tenant name
-                        let for_tenant = entry.with_tenant(tenant);
-                        self.access_token_file.update_entry(&for_tenant)?;
+                    if tenant.is_common() {
+                        drop(tenant);
+                        self.tenant.replace(token_set.access_token.tenant.clone());
                     }
 
-                    return Ok(entry);
+                    return Ok(token_set);
                 } else if json["error"].as_str() == Some("authorization_pending") {
                     debug!("Authorization pending...");
                 } else {
@@ -290,6 +280,25 @@ impl Client {
         }
 
         return Err(HttpClientError.into());
+    }
+
+    fn update_tokens(&self, token_set: &TokenSet) -> Result<()> {
+        let mut token_sets = { self.token_sets.try_borrow()?.clone() };
+        let mut updated = false;
+        for mut t in token_sets.iter_mut() {
+            if t.matches(token_set) {
+                t.access_token = token_set.access_token.clone();
+                t.refresh_token = token_set.refresh_token.clone();
+                t.expires_on = token_set.expires_on.clone();
+                updated = true;
+            }
+        }
+        if !updated {
+            token_sets.push(token_set.clone());
+        }
+        self.access_token_file.update_tokens(&token_sets)?;
+        self.token_sets.replace(token_sets);
+        Ok(())
     }
 
     fn headers_form() -> Result<List> {

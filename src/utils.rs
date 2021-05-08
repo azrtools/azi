@@ -1,5 +1,13 @@
 use std::error::Error;
 use std::ffi::OsString;
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Read;
+use std::path::Path;
+
+use serde_json::from_reader;
+use serde_json::Value;
 
 const DAYS: &[u32] = &[31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -24,6 +32,31 @@ pub fn days_of_month(year: u32, month: u32) -> Result<u32> {
     } else {
         return Err(Box::from("invalid month argument!"));
     }
+}
+
+pub fn read_file(path: &Path) -> Result<Value> {
+    if path.exists() {
+        let file = File::open(&path)?;
+        let reader = skip_bom(BufReader::new(file))?;
+        match from_reader(reader) {
+            Err(e) => {
+                trace!("Failed to parse file: {}", path.display());
+                Err(e.into())
+            }
+            Ok(value) => Ok(value),
+        }
+    } else {
+        debug!("File not found: {}", path.display());
+        Ok(Value::Null)
+    }
+}
+
+fn skip_bom(mut reader: BufReader<File>) -> Result<BufReader<File>> {
+    let buf = reader.fill_buf()?;
+    if buf.len() >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
+        reader.read_exact(&mut [0; 3])?;
+    }
+    Ok(reader)
 }
 
 #[cfg(test)]
