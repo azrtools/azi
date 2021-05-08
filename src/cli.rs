@@ -8,6 +8,7 @@ use env_logger;
 use log::LevelFilter;
 
 use crate::client::Client;
+use crate::commands::clusters;
 use crate::commands::costs;
 use crate::commands::dns;
 use crate::commands::domains;
@@ -53,9 +54,18 @@ const LIST: Command = (
     "List existing resource groups and resources",
     &[HELP, LIST_ID, LIST_RESOURCES, LIST_FILTER],
 );
-const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources", false);
 const LIST_ID: Flag = ("--id", "Also display resource IDs", false);
+const LIST_RESOURCES: Flag = ("-r, --resources", "Also list all resources", false);
 const LIST_FILTER: Flag = ("[<filter>]", "Filter resources by name", false);
+
+const CLUSTERS: Command = (
+    "clusters",
+    "List existing Kubernetes clusters",
+    &[HELP, CLUSTERS_ID, CLUSTERS_RESOURCES, CLUSTERS_FILTER],
+);
+const CLUSTERS_ID: Flag = ("--id", "Also display resource IDs", false);
+const CLUSTERS_RESOURCES: Flag = ("-r, --resources", "List Kubernetes resources", false);
+const CLUSTERS_FILTER: Flag = ("[<filter>]", "Filter clusters by name", false);
 
 const DOMAINS: Command = (
     "domains",
@@ -80,10 +90,15 @@ const PERIOD: Flag = (
 );
 
 const GET: Command = ("get", "Execute a GET request", &[HELP, REQUEST]);
-const POST: Command = ("post", "Execute a POST request", &[HELP, REQUEST]);
+const POST: Command = ("post", "Execute a POST request", &[HELP, BODY, REQUEST]);
+const BODY: Flag = (
+    "-d, --data <data>",
+    "The POST data, or - to read from stdin",
+    true,
+);
 const REQUEST: Flag = ("<request>", "The request to execute", false);
 
-const COMMANDS: &[Command] = &[LIST, DOMAINS, DNS, IP, COSTS, GET, POST];
+const COMMANDS: &[Command] = &[LIST, CLUSTERS, DOMAINS, DNS, IP, COSTS, GET, POST];
 
 const MAX_COLUMN: usize = 80;
 
@@ -162,6 +177,12 @@ pub fn run() {
                 let result = list(&context, list_resources, args.get_arg_opt(0))?;
                 output.print_list_results(&result, id)?;
             }
+            CLUSTERS => {
+                let id = args.has_command_flag(&CLUSTERS_ID);
+                let resources = args.has_command_flag(&CLUSTERS_RESOURCES);
+                let result = clusters(&context, resources, args.get_arg_opt(0))?;
+                output.print_clusters(&result, id)?;
+            }
             DOMAINS => {
                 let result = domains(&context, args.get_arg_opt(0))?;
                 output.print_domains(&result)?;
@@ -229,8 +250,14 @@ pub fn run() {
             }
             POST => {
                 let request = args.get_arg(0, &REQUEST)?;
-                let mut buffer = String::new();
-                stdin().read_to_string(&mut buffer)?;
+                let body = args.get_command_flag_arg(&BODY);
+                let buffer = if body.is_some() && body.unwrap() == "-" {
+                    let mut buffer = String::new();
+                    stdin().read_to_string(&mut buffer)?;
+                    buffer
+                } else {
+                    body.unwrap_or("").to_owned()
+                };
                 let result = post(&context, request, &buffer)?;
                 output.print_value(&result)?;
             }
@@ -364,6 +391,15 @@ impl Args {
         for global_flag in &self.global_flags {
             if &global_flag.0 == flag {
                 return Some(&global_flag.1);
+            }
+        }
+        return None;
+    }
+
+    fn get_command_flag_arg(&self, flag: &Flag) -> Option<&str> {
+        for command_flag in &self.command_flags {
+            if &command_flag.0 == flag {
+                return Some(&command_flag.1);
             }
         }
         return None;

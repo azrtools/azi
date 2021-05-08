@@ -35,7 +35,7 @@ pub fn list(
 ) -> Result<Vec<ListResult>> {
     let service = &context.service;
 
-    let mut subscriptions = vec![];
+    let mut results = vec![];
 
     for subscription in service.get_subscriptions()? {
         let mut resource_groups = service.get_resource_groups(&subscription.subscription_id)?;
@@ -69,7 +69,7 @@ pub fn list(
         if (list_resources && !resources.is_empty())
             || (!list_resources && !resource_groups.is_empty())
         {
-            subscriptions.push(ListResult {
+            results.push(ListResult {
                 subscription,
                 resource_groups,
                 resources,
@@ -77,7 +77,88 @@ pub fn list(
         }
     }
 
-    return Ok(subscriptions);
+    return Ok(results);
+}
+
+#[derive(Serialize)]
+pub struct ClusterResult {
+    pub subscription: Subscription,
+    pub clusters: Vec<Cluster>,
+}
+
+#[derive(Serialize)]
+pub struct Cluster {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub agent_pools: Vec<AgentPool>,
+}
+
+#[derive(Serialize)]
+pub struct AgentPool {
+    pub name: String,
+    pub count: u64,
+    pub min_count: Option<u64>,
+    pub max_count: Option<u64>,
+    pub vm_size: String,
+}
+
+pub fn clusters(
+    context: &Context,
+    resources: bool,
+    filter: Option<&String>,
+) -> Result<Vec<ClusterResult>> {
+    let service = &context.service;
+
+    let mut results = vec![];
+
+    for subscription in service.get_subscriptions()? {
+        let mut managed_clusters = service.get_clusters(&subscription.subscription_id)?;
+        if let Some(filter) = filter {
+            managed_clusters.retain(|cluster| cluster.name.contains(filter));
+        }
+
+        if !managed_clusters.is_empty() {
+            let clusters: Result<Vec<_>> = managed_clusters
+                .into_iter()
+                .map(|cluster| {
+                    let agent_pools: Vec<AgentPool> = service
+                        .get_agent_pools(&cluster.id)?
+                        .into_iter()
+                        .map(|agent_pool| {
+                            let profile = cluster
+                                .properties
+                                .agent_pool_profiles
+                                .iter()
+                                .find(|pool| pool.name == agent_pool.name);
+
+                            AgentPool {
+                                name: agent_pool.name,
+                                count: agent_pool.properties.count,
+                                min_count: profile.and_then(|p| p.min_count),
+                                max_count: profile.and_then(|p| p.max_count),
+                                vm_size: agent_pool.properties.vm_size,
+                            }
+                        })
+                        .collect();
+
+                    Ok(Cluster {
+                        id: cluster.id,
+                        name: cluster.name,
+                        version: cluster.properties.kubernetes_version,
+                        agent_pools,
+                    })
+                })
+                .collect();
+
+            results.push(ClusterResult {
+                subscription,
+                clusters: clusters?,
+            });
+        }
+    }
+
+    return Ok(results);
 }
 
 #[derive(Serialize)]

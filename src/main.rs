@@ -9,6 +9,7 @@ mod cli;
 mod client;
 mod commands;
 mod error;
+mod http;
 mod object;
 mod output;
 mod service;

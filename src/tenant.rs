@@ -7,6 +7,7 @@ use crate::error::AppError::InvalidAuthority;
 use crate::error::AppError::InvalidIssuer;
 use crate::error::AppError::InvalidTenantId;
 use crate::error::AppError::UnexpectedJson;
+use crate::http::Http;
 use crate::utils::read_file;
 use crate::utils::Result;
 
@@ -38,7 +39,7 @@ impl Tenant {
     }
   }
 
-  pub fn from_name<F: FnOnce(&str) -> Result<Value>>(name: &str, request: F) -> Result<Tenant> {
+  pub fn from_name(name: &str, http: &Http) -> Result<Tenant> {
     if Self::is_valid_id(name) {
       return Ok(Tenant {
         id: name.to_owned(),
@@ -49,7 +50,8 @@ impl Tenant {
       "https://login.microsoftonline.com/{}/.well-known/openid-configuration",
       name
     );
-    let json = request(&url)?;
+
+    let (_, json) = http.execute(&url, None, None)?;
 
     let issuer = json
       .get("issuer")

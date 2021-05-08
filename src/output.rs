@@ -3,6 +3,7 @@ use serde_json::to_string;
 use serde_json::to_string_pretty;
 use serde_json::Value;
 
+use crate::commands::ClusterResult;
 use crate::commands::CostResult;
 use crate::commands::DnsResult;
 use crate::commands::Domain;
@@ -10,10 +11,13 @@ use crate::commands::IpResult;
 use crate::commands::ListResult;
 use crate::object::DnsRecordEntry;
 use crate::object::Identifiable;
+use crate::object::Subscription;
 use crate::utils::Result;
 
 pub trait Output {
     fn print_list_results(&self, results: &Vec<ListResult>, id: bool) -> Result<()>;
+
+    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool) -> Result<()>;
 
     fn print_domains(&self, domains: &Vec<Domain>) -> Result<()>;
 
@@ -30,6 +34,11 @@ pub struct JsonOutput {}
 
 impl Output for JsonOutput {
     fn print_list_results(&self, results: &Vec<ListResult>, _: bool) -> Result<()> {
+        println!("{}", to_string_pretty(results)?);
+        return Ok(());
+    }
+
+    fn print_clusters(&self, results: &Vec<ClusterResult>, _: bool) -> Result<()> {
         println!("{}", to_string_pretty(results)?);
         return Ok(());
     }
@@ -62,18 +71,24 @@ impl Output for JsonOutput {
 
 pub struct TextOutput {}
 
+impl TextOutput {
+    fn print_subscription(&self, subscription: &Subscription, id: bool) {
+        if id {
+            println!(
+                "{} {}",
+                subscription.name.red(),
+                format!("({})", subscription.subscription_id).dimmed()
+            );
+        } else {
+            println!("{}", subscription.name.red());
+        }
+    }
+}
+
 impl Output for TextOutput {
     fn print_list_results(&self, results: &Vec<ListResult>, id: bool) -> Result<()> {
         for result in results {
-            if id {
-                println!(
-                    "{} {}",
-                    result.subscription.name.red(),
-                    format!("({})", result.subscription.subscription_id).dimmed()
-                );
-            } else {
-                println!("{}", result.subscription.name.red());
-            }
+            self.print_subscription(&result.subscription, id);
 
             for resource_group in &result.resource_groups {
                 println!("  {}", resource_group.name.blue());
@@ -95,6 +110,30 @@ impl Output for TextOutput {
                             );
                         }
                     }
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
+    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool) -> Result<()> {
+        for result in results {
+            self.print_subscription(&result.subscription, id);
+
+            for cluster in &result.clusters {
+                println!("  {} {}", cluster.name.blue(), cluster.version.cyan());
+
+                for agent_pool in &cluster.agent_pools {
+                    print!("    {}", format!("{}", agent_pool.count).yellow());
+                    if let (Some(min), Some(max)) = (agent_pool.min_count, agent_pool.max_count) {
+                        print!(" {}", format!("[{}-{}]", min, max).dimmed());
+                    }
+                    print!(" {}", agent_pool.vm_size);
+                    if id {
+                        print!(" {}", format!("({})", agent_pool.name).dimmed());
+                    }
+                    println!();
                 }
             }
         }

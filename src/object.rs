@@ -71,6 +71,55 @@ pub struct Resource {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManagedCluster {
+    pub id: String,
+    pub location: String,
+    pub name: String,
+    pub properties: ManagedClusterProperties,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManagedClusterProperties {
+    #[serde(rename = "kubernetesVersion")]
+    pub kubernetes_version: String,
+    #[serde(rename = "agentPoolProfiles")]
+    pub agent_pool_profiles: Vec<AgentPoolProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentPoolProfile {
+    pub name: String,
+    #[serde(rename = "minCount")]
+    pub min_count: Option<u64>,
+    #[serde(rename = "maxCount")]
+    pub max_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterCredentials {
+    pub kubeconfigs: Vec<ClusterCredentialsEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterCredentialsEntry {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentPool {
+    pub name: String,
+    pub properties: AgentPoolProperties,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentPoolProperties {
+    pub count: u64,
+    #[serde(rename = "vmSize")]
+    pub vm_size: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IpAddress {
     pub id: String,

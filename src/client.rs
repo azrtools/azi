@@ -1,13 +1,8 @@
 use std::cell::RefCell;
-use std::io::Read;
-use std::mem::drop;
 use std::thread::sleep;
 use std::time::Duration;
 
-use curl::easy::Easy;
-use curl::easy::List;
 use serde::de::DeserializeOwned;
-use serde_json::from_slice;
 use serde_json::from_value;
 use serde_json::Value;
 use url::Url;
@@ -16,6 +11,10 @@ use crate::auth::AccessTokenFile;
 use crate::auth::TokenSet;
 use crate::error::AppError::HttpClientError;
 use crate::error::AppError::UnexpectedJson;
+use crate::http::Header;
+use crate::http::Http;
+use crate::http::Status;
+use crate::http::StatusExt;
 use crate::tenant::Tenant;
 use crate::utils::Result;
 
@@ -42,8 +41,18 @@ impl<'r> Request<'r> {
         return self.client.request(self);
     }
 
-    pub fn post(&mut self) -> Result<Value> {
+    pub fn post_raw(&mut self) -> Result<Value> {
+        if self.body.is_none() {
+            self.body = Some("")
+        }
         return self.client.request(self);
+    }
+
+    pub fn post<T>(&mut self) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(from_value(self.post_raw()?)?)
     }
 
     pub fn get_list<T>(&self) -> Result<Vec<T>>
@@ -71,18 +80,15 @@ pub struct Client {
     tenant: RefCell<Tenant>,
     access_token_file: AccessTokenFile,
     token_sets: RefCell<Vec<TokenSet>>,
-    handle: RefCell<Easy>,
+    http: Http,
 }
 
 impl Client {
     pub fn new(tenant: Option<&str>) -> Result<Client> {
-        let mut handle = Easy::new();
-        handle.useragent("github.com/pascalgn/azi")?;
+        let http = Http::new()?;
 
         let tenant = match tenant {
-            Some(tenant) => Tenant::from_name(tenant, |url| {
-                execute(&mut handle, url, List::new(), None).map(|res| res.1)
-            })?,
+            Some(tenant) => Tenant::from_name(tenant, &http)?,
             None => Tenant::read_default_tenant()?.unwrap_or(Tenant::common()),
         };
 
@@ -95,7 +101,7 @@ impl Client {
             tenant: RefCell::new(tenant),
             access_token_file,
             token_sets: RefCell::new(token_sets),
-            handle: RefCell::new(handle),
+            http,
         })
     }
 
@@ -107,6 +113,10 @@ impl Client {
             query: ("", ""),
             body: None,
         };
+    }
+
+    pub fn http(&self) -> &Http {
+        &self.http
     }
 
     fn request(&self, request: &Request) -> Result<Value> {
@@ -153,8 +163,10 @@ impl Client {
         } else {
             request.url.to_owned()
         };
+
         let access_token = tokens.access_token.token();
-        self.execute_raw(&url, Self::headers_json(access_token)?, request.body)
+        self.http
+            .execute(&url, Some(Self::headers_json(access_token)), request.body)
     }
 
     fn get_value(&self, json: &Value) -> Result<Value> {
@@ -215,7 +227,10 @@ impl Client {
             "https://login.microsoftonline.com/{}/oauth2/token",
             tenant_id
         );
-        let (status, json) = self.execute_raw(&refresh_url, Self::headers_form()?, Some(&body))?;
+
+        let (status, json) =
+            self.http
+                .execute(&refresh_url, Some(Self::headers_form()), Some(&body))?;
 
         if status.is_success() {
             let token_set = TokenSet::from_json(&json)?;
@@ -239,7 +254,9 @@ impl Client {
 
         let body = format!("client_id={}&resource={}", CLIENT_ID, resource);
 
-        let (status, json) = self.execute_raw(&url, Self::headers_form()?, Some(&body))?;
+        let (status, json) = self
+            .http
+            .execute(&url, Some(Self::headers_form()), Some(&body))?;
 
         if status.is_success() {
             let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
@@ -258,7 +275,10 @@ impl Client {
                     "grant_type=device_code&client_id={}&resource={}&code={}",
                     CLIENT_ID, resource, device_code
                 );
-                let (status, json) = self.execute_raw(&url, Self::headers_form()?, Some(&body))?;
+
+                let (status, json) =
+                    self.http
+                        .execute(&url, Some(Self::headers_form()), Some(&body))?;
 
                 if status.is_success() {
                     let token_set = TokenSet::from_json(&json)?;
@@ -301,92 +321,17 @@ impl Client {
         Ok(())
     }
 
-    fn headers_form() -> Result<List> {
-        let mut headers = List::new();
-        headers.append("Content-Type: application/x-www-form-urlencoded")?;
-        return Ok(headers);
+    fn headers_form() -> Vec<Header> {
+        vec![(
+            "Content-Type",
+            "application/x-www-form-urlencoded".to_owned(),
+        )]
     }
 
-    fn headers_json(token: &str) -> Result<List> {
-        let mut headers = List::new();
-        headers.append(format!("Authorization: Bearer {}", token).as_str())?;
-        headers.append("Content-Type: application/json")?;
-        return Ok(headers);
-    }
-
-    fn execute_raw(&self, url: &str, headers: List, body: Option<&str>) -> Result<(Status, Value)> {
-        let mut handle = self.handle.try_borrow_mut()?;
-        return execute(&mut handle, url, headers, body);
-    }
-}
-
-fn execute(
-    handle: &mut Easy,
-    url: &str,
-    headers: List,
-    body: Option<&str>,
-) -> Result<(Status, Value)> {
-    debug!("Requesting: {}", url);
-
-    trace!("Request body: {:#?}", &body);
-
-    handle.url(url)?;
-    handle.http_headers(headers)?;
-
-    let mut data = body.unwrap_or("").as_bytes();
-
-    if body.is_some() {
-        handle.post(true)?;
-        handle.post_field_size(data.len() as u64)?;
-    } else {
-        handle.get(true)?;
-    }
-
-    let mut response: Vec<u8> = vec![];
-    let mut transfer = handle.transfer();
-    transfer.read_function(|buf| Ok(data.read(buf).unwrap_or(0)))?;
-    transfer.write_function(|buf| {
-        response.extend(buf);
-        Ok(buf.len())
-    })?;
-
-    if let Err(err) = transfer.perform() {
-        debug!("Request failed!");
-        return Err(err.into());
-    }
-
-    drop(transfer);
-
-    let status = handle.response_code()?;
-
-    trace!("Response: {}", status);
-
-    if !status.is_success() {
-        debug!("Request not successful: {}", status);
-    }
-
-    let json: Value = match from_slice(response.as_slice()) {
-        Ok(json) => {
-            trace!("Response JSON: {:#?}", &json);
-            json
-        }
-        Err(err) => {
-            trace!("Response JSON could not be parsed: {}", err);
-            Value::Null
-        }
-    };
-
-    return Ok((status, json));
-}
-
-type Status = u32;
-
-trait StatusExt {
-    fn is_success(&self) -> bool;
-}
-
-impl StatusExt for Status {
-    fn is_success(&self) -> bool {
-        return *self >= 200 && *self < 400;
+    fn headers_json(token: &str) -> Vec<Header> {
+        vec![
+            ("Authorization", format!("Bearer {}", token)),
+            ("Content-Type", "application/json".to_owned()),
+        ]
     }
 }

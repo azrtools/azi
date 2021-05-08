@@ -1,18 +1,21 @@
-use std::error::Error;
-
 use serde_json::json;
 use serde_json::Value;
+use url::Url;
 
 use crate::client::Client;
 use crate::client::Request;
 use crate::error::AppError::ServiceError;
+use crate::object::AgentPool;
+use crate::object::ClusterCredentials;
 use crate::object::Costs;
 use crate::object::DnsRecord;
 use crate::object::DnsRecordEntry;
 use crate::object::IpAddress;
+use crate::object::ManagedCluster;
 use crate::object::Resource;
 use crate::object::ResourceGroup;
 use crate::object::Subscription;
+use crate::utils::Result;
 
 pub const TYPE_DNS_ZONE: &'static str = "Microsoft.Network/dnsZones";
 
@@ -26,8 +29,6 @@ pub enum Timeframe {
     Custom { from: String, to: String },
 }
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
 const DEFAULT_PREFIX: &'static str = "https://management.azure.com/";
 const DEFAULT_RESOURCE: &'static str = "https://management.core.windows.net/";
 
@@ -37,36 +38,51 @@ impl Service {
     }
 
     pub fn get(&self, request: &str, resource: &str) -> Result<Value> {
-        return self.with_request(request, resource, |request| request.get_raw());
+        let url = &Service::to_url(request);
+        if Service::is_azure(url)? {
+            self.with_request(url, resource, |request| request.get_raw())
+        } else {
+            self.client.http().get(url)
+        }
     }
 
     pub fn post(&self, request: &str, resource: &str, body: &str) -> Result<Value> {
-        return self.with_request(request, resource, |request| request.body(body).post());
+        let url = &Service::to_url(request);
+        if Service::is_azure(url)? {
+            self.with_request(url, resource, |request| request.body(body).post_raw())
+        } else {
+            self.client.http().post(url, body)
+        }
+    }
+
+    fn to_url(request: &str) -> String {
+        if request.starts_with("https://") {
+            request.to_owned()
+        } else {
+            format!("{}{}", DEFAULT_PREFIX, request)
+        }
+    }
+
+    fn is_azure(url: &str) -> Result<bool> {
+        Url::parse(url).map_err(|err| err.into()).map(|url| {
+            url.host_str()
+                .map(|host| host == "azure.com" || host.ends_with(".azure.com"))
+                .unwrap_or(false)
+        })
     }
 
     fn with_request(
         &self,
-        request: &str,
+        url: &str,
         resource: &str,
         function: impl Fn(Request) -> Result<Value>,
     ) -> Result<Value> {
-        if request.starts_with("http://") {
-            warn!("Plain HTTP requested!");
-            return Err(ServiceError.into());
-        }
-
         let resource = if resource.is_empty() {
             DEFAULT_RESOURCE
         } else {
             resource
         };
-
-        if request.starts_with("https://") {
-            return function(self.client.new_request(request, resource));
-        } else {
-            let request = format!("{}/{}", DEFAULT_PREFIX, request);
-            return function(self.client.new_request(&request, resource));
-        }
+        function(self.client.new_request(url, resource))
     }
 
     pub fn get_subscriptions(&self) -> Result<Vec<Subscription>> {
@@ -111,6 +127,30 @@ impl Service {
             .new_request(&url, DEFAULT_RESOURCE)
             .query("$filter", &format!("resourceType eq '{}'", resource_type))
             .get_list();
+    }
+
+    pub fn get_clusters(&self, subscription_id: &str) -> Result<Vec<ManagedCluster>> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.ContainerService/managedClusters?api-version=2021-03-01",
+            subscription_id
+        );
+        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+    }
+
+    pub fn get_cluster_credentials(&self, cluster_id: &str) -> Result<ClusterCredentials> {
+        let url = format!(
+            "https://management.azure.com{}/listClusterMonitoringUserCredential?api-version=2021-03-01",
+            cluster_id
+        );
+        return self.client.new_request(&url, DEFAULT_RESOURCE).post();
+    }
+
+    pub fn get_agent_pools(&self, cluster_id: &str) -> Result<Vec<AgentPool>> {
+        let url = format!(
+            "https://management.azure.com{}/agentPools?api-version=2021-03-01",
+            cluster_id
+        );
+        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
     }
 
     pub fn get_ip_addresses(&self, subscription_id: &str) -> Result<Vec<IpAddress>> {
@@ -238,7 +278,7 @@ impl Service {
             .client
             .new_request(&url, DEFAULT_RESOURCE)
             .body(&body.to_string())
-            .post()?;
+            .post_raw()?;
 
         fn find_column(json: &Value, name: &str) -> Result<usize> {
             if let Some(columns) = json["properties"]["columns"].as_array() {
