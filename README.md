@@ -7,6 +7,8 @@
 
 Show Azure information.
 
+<img width="600" src="https://azrtools.github.io/azi/demo.svg">
+
 ## Installation
 
 You can download binaries from the [latest release](https://github.com/azrtools/azi/releases/latest).
