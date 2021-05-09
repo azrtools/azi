@@ -22,6 +22,12 @@ List all subscriptions and resource groups:
 azi list
 ```
 
+Show Kubernetes clusters and deployments:
+
+```
+azi clusters -r
+```
+
 Show the costs of March 2019:
 
 ```
