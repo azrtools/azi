@@ -15,7 +15,6 @@ use serde_json::Value;
 
 use crate::error::AppError::AccessTokenFileError;
 use crate::error::AppError::InvalidAccessToken;
-use crate::error::AppError::MismatchedTenantId;
 use crate::error::AppError::UnexpectedJson;
 use crate::tenant::Tenant;
 use crate::utils::read_file;
@@ -177,7 +176,10 @@ impl AccessTokenFileEntry {
         let access_token = AccessToken::parse(self.access_token.clone())?;
         let tenant = Tenant::from_authority(&self.authority)?;
         if access_token.tenant.id != tenant.id {
-            return Err(MismatchedTenantId(access_token.tenant.id, tenant.id).into());
+            debug!(
+                "Mismatched tenant ID: {} != {}",
+                access_token.tenant.id, tenant.id
+            );
         }
         Ok(TokenSet {
             resource: self.resource.clone(),

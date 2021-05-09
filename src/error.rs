@@ -19,7 +19,6 @@ pub enum AppError {
 
     InvalidAccessToken(String),
     InvalidTenantId(String),
-    MismatchedTenantId(String, String),
     InvalidIssuer(String),
     InvalidAuthority(String),
 }
@@ -47,9 +46,6 @@ impl fmt::Display for AppError {
                 f.write_fmt(format_args!("Invalid access token: {}", token))
             }
             AppError::InvalidTenantId(id) => f.write_fmt(format_args!("Invalid tenant ID: {}", id)),
-            AppError::MismatchedTenantId(a, b) => {
-                f.write_fmt(format_args!("Mismatched tenant ID: {} != {}", a, b))
-            }
             AppError::InvalidIssuer(issuer) => {
                 f.write_fmt(format_args!("Invalid issuer: {}", issuer))
             }
