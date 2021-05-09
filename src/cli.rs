@@ -23,6 +23,7 @@ use crate::error::AppError::ParseError;
 use crate::output::JsonOutput;
 use crate::output::Output;
 use crate::output::TextOutput;
+use crate::service::Filter;
 use crate::service::Service;
 use crate::service::Timeframe;
 use crate::utils::convert_str;
@@ -42,13 +43,18 @@ const TENANT: Flag = (
     "Set the Active Directory tenant to use",
     true,
 );
+const FILTER: Flag = (
+    "-f, --filter <filter>",
+    "Filter subscriptions to display",
+    true,
+);
 const OUTPUT: Flag = (
     "-o, --output <format>",
     "Set output format, one of 'text' (default) or 'json'",
     true,
 );
 
-const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, TENANT, OUTPUT];
+const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, TENANT, FILTER, OUTPUT];
 
 const LIST: Command = (
     "list",
@@ -181,7 +187,7 @@ pub fn run() {
 
     let run_command = || -> Result<()> {
         let client = Client::new(args.get_global_flag_arg(&TENANT))?;
-        let service = Service::new(client);
+        let service = Service::new(client, Filter::new(args.get_global_flag_arg(&FILTER)));
 
         let context = Context { service: &service };
 

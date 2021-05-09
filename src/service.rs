@@ -32,6 +32,7 @@ pub const TYPE_DNS_ZONE: &'static str = "Microsoft.Network/dnsZones";
 
 pub struct Service {
     client: Client,
+    filter: Filter,
 }
 
 #[derive(Debug)]
@@ -40,12 +41,34 @@ pub enum Timeframe {
     Custom { from: String, to: String },
 }
 
+pub struct Filter {
+    filter: Option<String>,
+}
+
+impl Filter {
+    pub fn new(filter: Option<&str>) -> Self {
+        Filter {
+            filter: filter.map(&str::to_lowercase),
+        }
+    }
+
+    pub fn matches(&self, s: &Subscription) -> bool {
+        match &self.filter {
+            Some(filter) => {
+                &s.subscription_id.to_lowercase() == filter
+                    || s.name.to_lowercase().contains(filter)
+            }
+            None => true,
+        }
+    }
+}
+
 const DEFAULT_PREFIX: &'static str = "https://management.azure.com/";
 const DEFAULT_RESOURCE: &'static str = "https://management.core.windows.net/";
 
 impl Service {
-    pub fn new(client: Client) -> Service {
-        return Service { client };
+    pub fn new(client: Client, filter: Filter) -> Service {
+        return Service { client, filter };
     }
 
     pub fn get(&self, request: &str, resource: &str) -> Result<Value> {
@@ -98,14 +121,15 @@ impl Service {
 
     pub fn get_subscriptions(&self) -> Result<Vec<Subscription>> {
         let url = "https://management.azure.com/subscriptions?api-version=2016-06-01";
-        return self
+        let mut subscriptions: Vec<Subscription> = self
             .client
             .new_request(url, DEFAULT_RESOURCE)
-            .get_list()
-            .map(|mut list: Vec<Subscription>| {
-                list.sort_by(|a, b| a.name.cmp(&b.name));
-                list
-            });
+            .get_list()?
+            .into_iter()
+            .filter(|subscription| self.filter.matches(&subscription))
+            .collect();
+        subscriptions.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(subscriptions)
     }
 
     pub fn get_resource_groups(&self, subscription_id: &str) -> Result<Vec<ResourceGroup>> {
@@ -113,7 +137,13 @@ impl Service {
             "https://management.azure.com/subscriptions/{}/resourcegroups?api-version=2018-05-01",
             subscription_id
         );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+        self.client
+            .new_request(&url, DEFAULT_RESOURCE)
+            .get_list()
+            .map(|mut list: Vec<ResourceGroup>| {
+                list.sort_by(|a, b| a.name.cmp(&b.name));
+                list
+            })
     }
 
     pub fn get_resources(&self, subscription_id: &str) -> Result<Vec<Resource>> {
@@ -121,7 +151,7 @@ impl Service {
             "https://management.azure.com/subscriptions/{}/resources?api-version=2018-05-01",
             subscription_id
         );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+        self.client.new_request(&url, DEFAULT_RESOURCE).get_list()
     }
 
     pub fn get_resources_by_type(
@@ -133,11 +163,10 @@ impl Service {
             "https://management.azure.com/subscriptions/{}/resources?api-version=2018-05-01",
             subscription_id
         );
-        return self
-            .client
+        self.client
             .new_request(&url, DEFAULT_RESOURCE)
             .query("$filter", &format!("resourceType eq '{}'", resource_type))
-            .get_list();
+            .get_list()
     }
 
     pub fn get_clusters(&self, subscription_id: &str) -> Result<Vec<ManagedCluster>> {
@@ -145,7 +174,7 @@ impl Service {
             "https://management.azure.com/subscriptions/{}/providers/Microsoft.ContainerService/managedClusters?api-version=2021-03-01",
             subscription_id
         );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+        self.client.new_request(&url, DEFAULT_RESOURCE).get_list()
     }
 
     pub fn get_agent_pools(&self, cluster_id: &str) -> Result<Vec<AgentPool>> {
@@ -153,7 +182,7 @@ impl Service {
             "https://management.azure.com{}/agentPools?api-version=2021-03-01",
             cluster_id
         );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+        self.client.new_request(&url, DEFAULT_RESOURCE).get_list()
     }
 
     pub fn get_cluster_kubeconfig(&self, cluster_id: &str) -> Result<String> {
