@@ -21,7 +21,7 @@ CIRCLECI_URL=$(curl "https://circleci.com/api/v1.1/project/github/${REPO}/latest
 curl -L "${CIRCLECI_URL}" > target/azi-linux64
 
 # Windows binary
-APPVEYOR_BUILD_ID=$(curl -s -H "Accept: application/json" https://ci.appveyor.com/api/projects/${REPO}/branch/master | jq -r .build.jobs[0].jobId)
+APPVEYOR_BUILD_ID=$(curl -s -H "Accept: application/json" https://ci.appveyor.com/api/projects/pascalgn/azi/branch/master | jq -r .build.jobs[0].jobId)
 curl -L "https://ci.appveyor.com/api/buildjobs/${APPVEYOR_BUILD_ID}/artifacts/target/release/azi.exe" > target/azi-win64.exe
 
 # MacOS binary
