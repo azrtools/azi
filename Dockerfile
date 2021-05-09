@@ -1,5 +1,5 @@
 # Build image
-FROM ekidd/rust-musl-builder:1.42.0 AS build
+FROM ekidd/rust-musl-builder:1.52.0 AS build
 
 COPY Cargo.toml Cargo.lock /tmp/
 COPY src/ /tmp/src/
@@ -7,7 +7,7 @@ COPY src/ /tmp/src/
 RUN cargo install --path /tmp && strip /home/rust/.cargo/bin/azi
 
 # Runtime image
-FROM alpine:3.9
+FROM alpine:3.13
 
 RUN apk add --no-cache ca-certificates tini && adduser -D -g azi azi
 
