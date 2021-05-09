@@ -1,21 +1,32 @@
+use std::net::IpAddr;
+use std::str::from_utf8;
+
+use base64::decode;
+use serde_derive::Deserialize;
 use serde_json::json;
 use serde_json::Value;
 use url::Url;
+use yaml_rust::Yaml;
+use yaml_rust::YamlLoader;
 
 use crate::client::Client;
 use crate::client::Request;
 use crate::error::AppError::ServiceError;
+use crate::http::Header;
+use crate::http::Http;
 use crate::object::AgentPool;
-use crate::object::ClusterCredentials;
 use crate::object::Costs;
 use crate::object::DnsRecord;
 use crate::object::DnsRecordEntry;
 use crate::object::IpAddress;
+use crate::object::KubernetesMetadata;
+use crate::object::KubernetesObject;
 use crate::object::ManagedCluster;
 use crate::object::Resource;
 use crate::object::ResourceGroup;
 use crate::object::Subscription;
 use crate::utils::Result;
+use crate::utils::ValueExt;
 
 pub const TYPE_DNS_ZONE: &'static str = "Microsoft.Network/dnsZones";
 
@@ -42,7 +53,7 @@ impl Service {
         if Service::is_azure(url)? {
             self.with_request(url, resource, |request| request.get_raw())
         } else {
-            self.client.http().get(url)
+            self.client.http().get(url)?.success()
         }
     }
 
@@ -51,7 +62,7 @@ impl Service {
         if Service::is_azure(url)? {
             self.with_request(url, resource, |request| request.body(body).post_raw())
         } else {
-            self.client.http().post(url, body)
+            self.client.http().post(url, body)?.success()
         }
     }
 
@@ -137,20 +148,167 @@ impl Service {
         return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
     }
 
-    pub fn get_cluster_credentials(&self, cluster_id: &str) -> Result<ClusterCredentials> {
-        let url = format!(
-            "https://management.azure.com{}/listClusterMonitoringUserCredential?api-version=2021-03-01",
-            cluster_id
-        );
-        return self.client.new_request(&url, DEFAULT_RESOURCE).post();
-    }
-
     pub fn get_agent_pools(&self, cluster_id: &str) -> Result<Vec<AgentPool>> {
         let url = format!(
             "https://management.azure.com{}/agentPools?api-version=2021-03-01",
             cluster_id
         );
         return self.client.new_request(&url, DEFAULT_RESOURCE).get_list();
+    }
+
+    pub fn get_cluster_kubeconfig(&self, cluster_id: &str) -> Result<String> {
+        #[derive(Debug, Clone, Deserialize)]
+        pub struct ClusterCredentials {
+            pub kubeconfigs: Vec<ClusterCredentialsEntry>,
+        }
+
+        #[derive(Debug, Clone, Deserialize)]
+        pub struct ClusterCredentialsEntry {
+            pub name: String,
+            pub value: String,
+        }
+
+        let credentials: ClusterCredentials = {
+            let url = format!(
+                "https://management.azure.com{}/listClusterUserCredential?api-version=2021-03-01",
+                cluster_id
+            );
+            self.client.new_request(&url, DEFAULT_RESOURCE).post()?
+        };
+
+        let entry = credentials
+            .kubeconfigs
+            .iter()
+            .find(|e| e.name == "clusterUser")
+            .ok_or(ServiceError("entry 'clusterUser' not found"))?;
+
+        let kubeconfig = from_utf8(&decode(&entry.value)?)?.to_owned();
+        debug!("kubeconfig: {}", kubeconfig);
+
+        Ok(kubeconfig)
+    }
+
+    pub fn get_kubernetes_objects(
+        &self,
+        kubeconfig: &str,
+        all_resources: bool,
+    ) -> Result<Vec<KubernetesObject>> {
+        let cluster = KubernetesCluster::parse(kubeconfig)?;
+
+        let http = Http::for_certificate_authority(&cluster.certificate_authority)?
+            .with_url(cluster.server.clone());
+
+        let http = match &cluster.auth {
+            KubernetesAuthentication::BearerToken(token) => {
+                http.with_headers(vec![Header::auth_bearer(&token), Header::content_json()])
+            }
+            KubernetesAuthentication::AccessToken {
+                client_id,
+                resource,
+            } => {
+                let token_set = self.client.get_token_set(&client_id, &resource)?;
+                http.with_headers(vec![
+                    Header::auth_bearer(token_set.access_token.token()),
+                    Header::content_json(),
+                ])
+            }
+        };
+
+        let mut objects = vec![];
+        Self::get_kubernetes_services(&http, &mut objects)?;
+        Self::get_kubernetes_deployments(&http, &mut objects)?;
+
+        if !all_resources {
+            objects.retain(|object| {
+                let metadata = object.metadata();
+                metadata.namespace != "kube-system"
+                    && metadata
+                        .labels
+                        .get("provider")
+                        .filter(|p| p.as_str() == "kubernetes")
+                        .is_none()
+            });
+        }
+
+        Ok(objects)
+    }
+
+    fn get_kubernetes_services(http: &Http, objects: &mut Vec<KubernetesObject>) -> Result<()> {
+        let json = http
+            .execute("/api/v1/services?limit=200", None, None)?
+            .success()?;
+
+        fn to_service(json: &Value) -> Result<KubernetesObject> {
+            let metadata = json["metadata"].clone().to::<KubernetesMetadata>()?;
+            let service_type = json["spec"]["type"].string()?;
+            let mut ip_addresses = vec![];
+            if let Some(ip) = json["spec"]["clusterIP"].as_str() {
+                ip_addresses.push(ip.to_owned());
+            }
+            if let Some(ip_arr) = json["spec"]["externalIPs"].as_array() {
+                for ip in ip_arr {
+                    ip_addresses.push(ip.string()?);
+                }
+            }
+            if let Some(ingress_arr) = json["status"]["loadBalancer"]["ingress"].as_array() {
+                for ingress in ingress_arr {
+                    if let Some(ip) = ingress["ip"].as_str() {
+                        ip_addresses.push(ip.to_owned());
+                    }
+                }
+            }
+            ip_addresses.retain(|ip| ip != "" && ip != "None");
+            let ip_addresses = ip_addresses
+                .into_iter()
+                .map(|ip| Ok(ip.parse::<IpAddr>()?))
+                .collect::<Result<Vec<IpAddr>>>()?;
+            Ok(KubernetesObject::Service {
+                metadata,
+                service_type,
+                ip_addresses,
+            })
+        }
+
+        for item in json["items"].to_array()? {
+            objects.push(match to_service(item) {
+                Ok(service) => service,
+                Err(err) => {
+                    debug!("Failed to parse JSON: {}", item.to_string());
+                    return Err(err);
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    fn get_kubernetes_deployments(http: &Http, objects: &mut Vec<KubernetesObject>) -> Result<()> {
+        let json = http
+            .execute("/apis/apps/v1/deployments?limit=200", None, None)?
+            .success()?;
+
+        fn to_deployment(json: &Value) -> Result<KubernetesObject> {
+            let metadata = json["metadata"].clone().to::<KubernetesMetadata>()?;
+            let target = json["status"]["replicas"].as_u64().unwrap_or(0);
+            let ready = json["status"]["readyReplicas"].as_u64().unwrap_or(0);
+            Ok(KubernetesObject::Deployment {
+                metadata,
+                target,
+                ready,
+            })
+        }
+
+        for item in json["items"].to_array()? {
+            objects.push(match to_deployment(item) {
+                Ok(deployment) => deployment,
+                Err(err) => {
+                    debug!("Failed to parse JSON: {}", item.to_string());
+                    return Err(err);
+                }
+            });
+        }
+
+        Ok(())
     }
 
     pub fn get_ip_addresses(&self, subscription_id: &str) -> Result<Vec<IpAddress>> {
@@ -163,7 +321,7 @@ impl Service {
             .new_request(&url, DEFAULT_RESOURCE)
             .get_raw()?
             .as_array()
-            .ok_or(ServiceError)?
+            .ok_or(ServiceError("response is not an array"))?
             .iter()
             .filter_map(|row| {
                 if let (Some(id), Some(name), Some(ip_address)) = (
@@ -201,7 +359,7 @@ impl Service {
 
         let records = json
             .as_array()
-            .ok_or(ServiceError)?
+            .ok_or(ServiceError("response is not an array"))?
             .iter()
             .filter_map(|row| {
                 let (id, name) =
@@ -290,7 +448,7 @@ impl Service {
                 }
             }
             warn!("Column not found: {}", name);
-            return Err(ServiceError.into());
+            return Err(ServiceError("column not found").into());
         }
 
         let resource_group_col = find_column(&json, "ResourceGroup")?;
@@ -299,7 +457,7 @@ impl Service {
 
         let items = json["properties"]["rows"]
             .as_array()
-            .ok_or(ServiceError)?
+            .ok_or(ServiceError("response is not an array"))?
             .iter()
             .filter_map(|value| {
                 if let Some(arr) = value.as_array() {
@@ -321,5 +479,106 @@ impl Service {
             .collect::<Vec<_>>();
 
         return Ok(items);
+    }
+}
+
+pub struct KubernetesCluster {
+    pub name: String,
+    pub server: String,
+    pub certificate_authority: String,
+    pub auth: KubernetesAuthentication,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum KubernetesAuthentication {
+    BearerToken(String),
+    AccessToken { client_id: String, resource: String },
+}
+
+impl KubernetesCluster {
+    pub fn parse(kubeconfig: &str) -> Result<KubernetesCluster> {
+        let err = || ServiceError("invalid kubeconfig structure");
+
+        let configs = YamlLoader::load_from_str(kubeconfig)?;
+        let config = configs.get(0).ok_or_else(err)?;
+
+        fn get_entry<'a>(obj: &'a Yaml, name: &Yaml) -> Result<&'a Yaml> {
+            let err = || ServiceError("cannot find kubeconfig entry");
+            let name = name.as_str().ok_or_else(err)?;
+            Ok(obj
+                .as_vec()
+                .ok_or_else(err)?
+                .iter()
+                .find(|c| c["name"].as_str() == Some(name))
+                .ok_or_else(err)?)
+        }
+
+        let current_context = &config["current-context"];
+        let context = &get_entry(&config["contexts"], &current_context)?["context"];
+
+        let cluster = &get_entry(&config["clusters"], &context["cluster"])?["cluster"];
+        let user = &get_entry(&config["users"], &context["user"])?["user"];
+
+        let to_str = |yaml: &Yaml| yaml.as_str().ok_or_else(err).map(|s| s.to_owned());
+
+        let ca = from_utf8(&decode(&to_str(&cluster["certificate-authority-data"])?)?)?.to_owned();
+
+        let auth = if !user["auth-provider"].is_badvalue() {
+            KubernetesAuthentication::AccessToken {
+                client_id: to_str(&user["auth-provider"]["config"]["client-id"])?,
+                resource: to_str(&user["auth-provider"]["config"]["apiserver-id"])?,
+            }
+        } else {
+            KubernetesAuthentication::BearerToken(to_str(&user["token"])?)
+        };
+
+        Ok(KubernetesCluster {
+            name: to_str(&context["cluster"])?,
+            server: to_str(&cluster["server"])?,
+            certificate_authority: ca,
+            auth,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KubernetesAuthentication;
+    use super::KubernetesCluster;
+
+    #[test]
+    fn test_parse_kubeconfig() {
+        let data = r#"current-context: context0
+contexts:
+- name: context0
+  context:
+    cluster: cluster0
+    user: user0
+clusters:
+- name: cluster0
+  cluster:
+    certificate-authority-data: Q0E=
+    server: http://localhost
+users:
+- name: user0
+  user:
+    auth-provider:
+      config:
+        client-id: abc-def
+        apiserver-id: 123-456
+"#;
+        let parsed = KubernetesCluster::parse(data);
+        assert_eq!(true, parsed.is_ok());
+        let cluster = parsed.unwrap();
+        assert_eq!("cluster0", cluster.name);
+        assert_eq!("http://localhost", cluster.server);
+        assert_eq!("CA", cluster.certificate_authority);
+        assert_eq!(
+            KubernetesAuthentication::AccessToken {
+                client_id: "abc-def".to_owned(),
+                resource: "123-456".to_owned()
+            },
+            cluster.auth
+        );
     }
 }

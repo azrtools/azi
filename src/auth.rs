@@ -20,6 +20,7 @@ use crate::error::AppError::UnexpectedJson;
 use crate::tenant::Tenant;
 use crate::utils::read_file;
 use crate::utils::Result;
+use crate::utils::ValueExt;
 
 const ACCESS_TOKENS_PATH: &'static str = ".azure/accessTokens.json";
 const DEFAULT_EXPIRATION: u64 = 60 * 60;
@@ -52,10 +53,10 @@ impl AccessToken {
 
         Ok(AccessToken {
             exp,
-            app_id: to_string(&decoded["appid"])?,
-            oid: to_string(&decoded["oid"])?,
-            unique_name: to_string(&decoded["unique_name"])?,
-            tenant: Tenant::from_id(to_string(&decoded["tid"])?)?,
+            app_id: decoded["appid"].string()?,
+            oid: decoded["oid"].string()?,
+            unique_name: decoded["unique_name"].string()?,
+            tenant: Tenant::from_id(decoded["tid"].string()?)?,
             token,
         })
     }
@@ -79,7 +80,7 @@ pub struct TokenSet {
 
 impl TokenSet {
     pub fn from_json(json: &Value) -> Result<TokenSet> {
-        let access_token = AccessToken::parse(to_string(&json["access_token"])?)?;
+        let access_token = AccessToken::parse(json["access_token"].string()?)?;
 
         let expires_on = if let Some(expires_on) = json["expires_on"].as_u64() {
             expires_on
@@ -94,34 +95,32 @@ impl TokenSet {
         }
 
         Ok(TokenSet {
-            resource: to_string(&json["resource"])?,
+            resource: json["resource"].string()?,
             access_token,
-            refresh_token: to_string(&json["refresh_token"])?,
+            refresh_token: json["refresh_token"].string()?,
             expires_on,
         })
     }
 
-    pub fn find(token_sets: &Vec<TokenSet>, authority: &str, resource: &str) -> Option<TokenSet> {
+    pub fn find(
+        token_sets: &Vec<TokenSet>,
+        client_id: &str,
+        authority: &str,
+        resource: Option<&str>,
+    ) -> Option<TokenSet> {
         token_sets
             .iter()
             .find(|token_set| {
-                token_set.access_token.tenant.authority() == authority
-                    && token_set.resource == resource
+                token_set.access_token.app_id == client_id
+                    && token_set.access_token.tenant.authority() == authority
+                    && (resource == None || token_set.resource == resource.unwrap())
             })
             .map(|token_set| token_set.clone())
             .or_else(|| {
-                debug!("Did not find token set: {} {}", authority, resource);
-                None
-            })
-    }
-
-    pub fn find_any(token_sets: &Vec<TokenSet>, authority: &str) -> Option<TokenSet> {
-        token_sets
-            .iter()
-            .find(|token_set| token_set.access_token.tenant.authority() == authority)
-            .map(|token_set| token_set.clone())
-            .or_else(|| {
-                debug!("Did not find token set: {}", authority);
+                debug!(
+                    "Did not find token set: {} {} {:?}",
+                    client_id, authority, resource
+                );
                 None
             })
     }
@@ -131,17 +130,11 @@ impl TokenSet {
     }
 
     pub fn matches(&self, token_set: &TokenSet) -> bool {
-        token_set.access_token.tenant.id == self.access_token.tenant.id
+        token_set.access_token.tenant == self.access_token.tenant
             && token_set.resource == self.resource
             && token_set.access_token.app_id == self.access_token.app_id
             && token_set.access_token.unique_name == self.access_token.unique_name
     }
-}
-
-fn to_string(v: &Value) -> Result<String> {
-    v.as_str()
-        .map(str::to_owned)
-        .ok_or(UnexpectedJson(v.clone()).into())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -263,7 +256,7 @@ impl AccessTokenFile {
                 if e.matches(token_set) {
                     e.update_from(token_set);
                     updated = true;
-                    trace!("Updated token: {:?}", token_set);
+                    trace!("Updated token: {:?}", e);
                 }
             }
 
@@ -279,9 +272,8 @@ impl AccessTokenFile {
 
         let file = File::create(&self.path)?;
         serde_json::to_writer(&file, &entries)?;
-        debug!("Updated access token file: {}", self.path.display());
+        debug!("Written access token file: {}", self.path.display());
 
-        trace!("Updated access token entries: {:?}", entries);
         Ok(())
     }
 }

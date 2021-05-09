@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
+
 use regex::Regex;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
@@ -97,17 +100,6 @@ pub struct AgentPoolProfile {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ClusterCredentials {
-    pub kubeconfigs: Vec<ClusterCredentialsEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ClusterCredentialsEntry {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct AgentPool {
     pub name: String,
     pub properties: AgentPoolProperties,
@@ -118,6 +110,45 @@ pub struct AgentPoolProperties {
     pub count: u64,
     #[serde(rename = "vmSize")]
     pub vm_size: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KubernetesMetadata {
+    pub name: String,
+    pub namespace: String,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum KubernetesObject {
+    Service {
+        metadata: KubernetesMetadata,
+        service_type: String,
+        ip_addresses: Vec<IpAddr>,
+    },
+    Deployment {
+        metadata: KubernetesMetadata,
+        target: u64,
+        ready: u64,
+    },
+}
+
+impl KubernetesObject {
+    pub fn metadata(&self) -> &KubernetesMetadata {
+        match self {
+            KubernetesObject::Service {
+                metadata,
+                service_type: _,
+                ip_addresses: _,
+            } => metadata,
+            KubernetesObject::Deployment {
+                metadata,
+                target: _,
+                ready: _,
+            } => metadata,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

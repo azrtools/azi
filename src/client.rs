@@ -1,3 +1,4 @@
+use crate::http::Response;
 use std::cell::RefCell;
 use std::thread::sleep;
 use std::time::Duration;
@@ -13,8 +14,6 @@ use crate::error::AppError::HttpClientError;
 use crate::error::AppError::UnexpectedJson;
 use crate::http::Header;
 use crate::http::Http;
-use crate::http::Status;
-use crate::http::StatusExt;
 use crate::tenant::Tenant;
 use crate::utils::Result;
 
@@ -85,7 +84,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(tenant: Option<&str>) -> Result<Client> {
-        let http = Http::new()?;
+        let http = Http::new();
 
         let tenant = match tenant {
             Some(tenant) => Tenant::from_name(tenant, &http)?,
@@ -120,14 +119,10 @@ impl Client {
     }
 
     fn request(&self, request: &Request) -> Result<Value> {
-        let token_set = self.get_token_set(request.resource)?;
-
-        let (status, json) = self.execute_request(request, &token_set)?;
-
-        if status.is_success() {
-            return self.get_value(&json);
-        } else {
-            return self.try_rerequest(&token_set, request, &json);
+        let token_set = self.get_token_set(CLIENT_ID, request.resource)?;
+        match self.execute_request(request, &token_set)? {
+            Response::Success(json) => self.get_value(&json),
+            Response::Error(_, json) => self.try_rerequest(&token_set, request, &json),
         }
     }
 
@@ -140,13 +135,9 @@ impl Client {
         if let Some(code) = json["error"]["code"].as_str() {
             if code == "ExpiredAuthenticationToken" || code == "AuthenticationFailed" {
                 debug!("Auth token expired!");
-                let token_set = self.refresh_token(request.resource, token_set)?;
-                let (status, json) = self.execute_request(request, &token_set)?;
-                if status.is_success() {
-                    return self.get_value(&json);
-                } else {
-                    return Err(HttpClientError.into());
-                }
+                let token_set = self.refresh_token(CLIENT_ID, request.resource, token_set)?;
+                let json = self.execute_request(request, &token_set)?.success()?;
+                return self.get_value(&json);
             } else {
                 debug!("Unknown error: {}", code);
             }
@@ -154,7 +145,7 @@ impl Client {
         Err(UnexpectedJson(json.clone()).into())
     }
 
-    fn execute_request(&self, request: &Request, tokens: &TokenSet) -> Result<(Status, Value)> {
+    fn execute_request(&self, request: &Request, tokens: &TokenSet) -> Result<Response> {
         let (key, value) = request.query;
         let url = if key.len() > 0 && value.len() > 0 {
             let mut url = Url::parse(request.url)?;
@@ -165,8 +156,14 @@ impl Client {
         };
 
         let access_token = tokens.access_token.token();
-        self.http
-            .execute(&url, Some(Self::headers_json(access_token)), request.body)
+        self.http.execute(
+            &url,
+            Some(&vec![
+                Header::content_json(),
+                Header::auth_bearer(access_token),
+            ]),
+            request.body,
+        )
     }
 
     fn get_value(&self, json: &Value) -> Result<Value> {
@@ -178,7 +175,7 @@ impl Client {
         }
     }
 
-    fn get_token_set(&self, resource: &str) -> Result<TokenSet> {
+    pub fn get_token_set(&self, client_id: &str, resource: &str) -> Result<TokenSet> {
         let authority = {
             let tenant = self.tenant.try_borrow()?;
             tenant.authority()
@@ -186,11 +183,11 @@ impl Client {
 
         if let Some(token_set) = {
             let token_sets = self.token_sets.try_borrow()?;
-            TokenSet::find(&token_sets, &authority, resource)
+            TokenSet::find(&token_sets, client_id, &authority, Some(resource))
         } {
             if token_set.access_token.is_expired() {
                 trace!("Found expired token set: {:?}", token_set);
-                return Ok(self.refresh_token(resource, &token_set)?);
+                return Ok(self.refresh_token(client_id, resource, &token_set)?);
             } else {
                 trace!("Found valid token set: {:?}", token_set);
                 return Ok(token_set.clone());
@@ -199,18 +196,23 @@ impl Client {
 
         if let Some(token_set) = {
             let token_sets = self.token_sets.try_borrow()?;
-            TokenSet::find_any(&token_sets, &authority)
+            TokenSet::find(&token_sets, client_id, &authority, None)
         } {
             debug!("Trying to get access from existing refresh token...");
-            return Ok(self.refresh_token(resource, &token_set)?);
+            return Ok(self.refresh_token(client_id, resource, &token_set)?);
         }
 
         debug!("Trying to get new access token...");
-        return self.request_new_token(resource);
+        return self.request_new_token(client_id, resource);
     }
 
-    fn refresh_token(&self, resource: &str, token_set: &TokenSet) -> Result<TokenSet> {
-        debug!("Refreshing token for {}", resource);
+    fn refresh_token(
+        &self,
+        client_id: &str,
+        resource: &str,
+        token_set: &TokenSet,
+    ) -> Result<TokenSet> {
+        debug!("Refreshing token with {} for {}", client_id, resource);
 
         trace!("Current token: {:?}", token_set);
 
@@ -221,30 +223,35 @@ impl Client {
 
         let body = format!(
             "client_id={}&refresh_token={}&grant_type=refresh_token&resource={}",
-            CLIENT_ID, token_set.refresh_token, resource
+            client_id, token_set.refresh_token, resource
         );
         let refresh_url = format!(
             "https://login.microsoftonline.com/{}/oauth2/token",
             tenant_id
         );
 
-        let (status, json) =
-            self.http
-                .execute(&refresh_url, Some(Self::headers_form()), Some(&body))?;
-
-        if status.is_success() {
-            let token_set = TokenSet::from_json(&json)?;
-            self.update_tokens(&token_set)?;
-            return Ok(token_set);
-        } else if json["error"].as_str() == Some("invalid_grant") {
-            debug!("Refresh token is no longer valid!");
-            return Ok(self.request_new_token(resource)?);
-        } else {
-            return Err(UnexpectedJson(json).into());
+        match self.http.execute(
+            &refresh_url,
+            Some(&vec![Header::content_form()]),
+            Some(&body),
+        )? {
+            Response::Success(json) => {
+                let token_set = TokenSet::from_json(&json)?;
+                self.update_tokens(&token_set)?;
+                return Ok(token_set);
+            }
+            Response::Error(_, json) => {
+                if json["error"].as_str() == Some("invalid_grant") {
+                    debug!("Refresh token is no longer valid!");
+                    Ok(self.request_new_token(client_id, resource)?)
+                } else {
+                    Err(UnexpectedJson(json).into())
+                }
+            }
         }
     }
 
-    fn request_new_token(&self, resource: &str) -> Result<TokenSet> {
+    fn request_new_token(&self, client_id: &str, resource: &str) -> Result<TokenSet> {
         let tenant = self.tenant.try_borrow()?;
 
         let url = format!(
@@ -252,35 +259,35 @@ impl Client {
             tenant.id
         );
 
-        let body = format!("client_id={}&resource={}", CLIENT_ID, resource);
+        let body = format!("client_id={}&resource={}", client_id, resource);
 
-        let (status, json) = self
+        let json = self
             .http
-            .execute(&url, Some(Self::headers_form()), Some(&body))?;
+            .execute(&url, Some(&vec![Header::content_form()]), Some(&body))?
+            .success()?;
 
-        if status.is_success() {
-            let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
+        let device_code = json["device_code"].as_str().ok_or(HttpClientError)?;
 
-            let message = json["message"].as_str().ok_or(HttpClientError)?;
-            eprintln!("{}", message);
+        let message = json["message"].as_str().ok_or(HttpClientError)?;
+        eprintln!("{}", message);
 
-            loop {
-                sleep(Duration::from_millis(5000));
+        loop {
+            sleep(Duration::from_millis(5000));
 
-                let url = format!(
-                    "https://login.microsoftonline.com/{}/oauth2/token",
-                    tenant.id
-                );
-                let body = format!(
-                    "grant_type=device_code&client_id={}&resource={}&code={}",
-                    CLIENT_ID, resource, device_code
-                );
+            let url = format!(
+                "https://login.microsoftonline.com/{}/oauth2/token",
+                tenant.id
+            );
+            let body = format!(
+                "grant_type=device_code&client_id={}&resource={}&code={}",
+                client_id, resource, device_code
+            );
 
-                let (status, json) =
-                    self.http
-                        .execute(&url, Some(Self::headers_form()), Some(&body))?;
-
-                if status.is_success() {
+            match self
+                .http
+                .execute(&url, Some(&vec![Header::content_form()]), Some(&body))?
+            {
+                Response::Success(json) => {
                     let token_set = TokenSet::from_json(&json)?;
                     self.update_tokens(&token_set)?;
 
@@ -290,16 +297,17 @@ impl Client {
                     }
 
                     return Ok(token_set);
-                } else if json["error"].as_str() == Some("authorization_pending") {
-                    debug!("Authorization pending...");
-                } else {
-                    warn!("Unknown error response: {}", json);
-                    break;
                 }
-            }
+                Response::Error(_, json) => {
+                    if json["error"].as_str() == Some("authorization_pending") {
+                        debug!("Authorization pending...");
+                    } else {
+                        warn!("Unknown error response: {}", json);
+                        return Err(UnexpectedJson(json).into());
+                    }
+                }
+            };
         }
-
-        return Err(HttpClientError.into());
     }
 
     fn update_tokens(&self, token_set: &TokenSet) -> Result<()> {
@@ -319,19 +327,5 @@ impl Client {
         self.access_token_file.update_tokens(&token_sets)?;
         self.token_sets.replace(token_sets);
         Ok(())
-    }
-
-    fn headers_form() -> Vec<Header> {
-        vec![(
-            "Content-Type",
-            "application/x-www-form-urlencoded".to_owned(),
-        )]
-    }
-
-    fn headers_json(token: &str) -> Vec<Header> {
-        vec![
-            ("Authorization", format!("Bearer {}", token)),
-            ("Content-Type", "application/json".to_owned()),
-        ]
     }
 }

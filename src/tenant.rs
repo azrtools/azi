@@ -13,7 +13,7 @@ use crate::utils::Result;
 
 const AZURE_PROFILE_PATH: &'static str = ".azure/azureProfile.json";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tenant {
   pub id: String,
 }
@@ -51,7 +51,7 @@ impl Tenant {
       name
     );
 
-    let (_, json) = http.execute(&url, None, None)?;
+    let json = http.execute(&url, None, None)?.success()?;
 
     let issuer = json
       .get("issuer")

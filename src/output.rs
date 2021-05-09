@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use colored::Colorize;
 use serde_json::to_string;
 use serde_json::to_string_pretty;
@@ -11,6 +13,7 @@ use crate::commands::IpResult;
 use crate::commands::ListResult;
 use crate::object::DnsRecordEntry;
 use crate::object::Identifiable;
+use crate::object::KubernetesObject;
 use crate::object::Subscription;
 use crate::utils::Result;
 
@@ -124,16 +127,59 @@ impl Output for TextOutput {
             for cluster in &result.clusters {
                 println!("  {} {}", cluster.name.blue(), cluster.version.cyan());
 
-                for agent_pool in &cluster.agent_pools {
-                    print!("    {}", format!("{}", agent_pool.count).yellow());
-                    if let (Some(min), Some(max)) = (agent_pool.min_count, agent_pool.max_count) {
-                        print!(" {}", format!("[{}-{}]", min, max).dimmed());
+                if let Some(agent_pools) = &cluster.agent_pools {
+                    for pool in agent_pools {
+                        print!("    {}", format!("{}", pool.count).yellow());
+                        if let (Some(min), Some(max)) = (pool.min_count, pool.max_count) {
+                            print!(" {}", format!("[{}-{}]", min, max).dimmed());
+                        }
+                        print!(" {}", pool.vm_size);
+                        if id {
+                            print!(" {}", format!("({})", pool.name).dimmed());
+                        }
+                        println!();
                     }
-                    print!(" {}", agent_pool.vm_size);
-                    if id {
-                        print!(" {}", format!("({})", agent_pool.name).dimmed());
+                }
+
+                if let Some(objects) = &cluster.objects {
+                    for object in objects {
+                        match object {
+                            KubernetesObject::Service {
+                                metadata,
+                                service_type: _,
+                                ip_addresses,
+                            } => {
+                                let namespace = format!("{}/", metadata.namespace).dimmed();
+                                print!("    {}{}", namespace, metadata.name);
+                                for ip in ip_addresses {
+                                    let private = match ip {
+                                        IpAddr::V4(ip) => ip.is_private(),
+                                        IpAddr::V6(ip) => ip.is_loopback(),
+                                    };
+                                    if private {
+                                        print!(" {}", ip.to_string().dimmed());
+                                    } else {
+                                        print!(" {}", ip.to_string().green());
+                                    }
+                                }
+                                println!();
+                            }
+                            KubernetesObject::Deployment {
+                                metadata,
+                                target,
+                                ready,
+                            } => {
+                                let pods = format!("{}/{}", ready, target);
+                                let pods = if ready >= target {
+                                    pods.green()
+                                } else {
+                                    pods.red()
+                                };
+                                let namespace = format!("{}/", metadata.namespace).dimmed();
+                                println!("    {}{} {}", namespace, metadata.name, pods);
+                            }
+                        };
                     }
-                    println!();
                 }
             }
         }

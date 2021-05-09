@@ -6,8 +6,11 @@ use std::io::BufReader;
 use std::io::Read;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde_json::from_reader;
 use serde_json::Value;
+
+use crate::error::AppError::UnexpectedJsonType;
 
 const DAYS: &[u32] = &[31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -57,6 +60,41 @@ fn skip_bom(mut reader: BufReader<File>) -> Result<BufReader<File>> {
         reader.read_exact(&mut [0; 3])?;
     }
     Ok(reader)
+}
+
+pub trait ValueExt {
+    fn to<T: DeserializeOwned>(self) -> Result<T>;
+    fn to_u64(&self) -> Result<u64>;
+    fn to_str(&self) -> Result<&str>;
+    fn string(&self) -> Result<String>;
+    fn to_array(&self) -> Result<&Vec<Value>>;
+}
+
+impl ValueExt for Value {
+    fn to<T: DeserializeOwned>(self) -> Result<T> {
+        Ok(serde_json::from_value(self)?)
+    }
+
+    fn to_u64(&self) -> Result<u64> {
+        self.as_u64()
+            .ok_or_else(|| UnexpectedJsonType(self.clone(), "u64").into())
+    }
+
+    fn to_str(&self) -> Result<&str> {
+        self.as_str()
+            .ok_or_else(|| UnexpectedJsonType(self.clone(), "str").into())
+    }
+
+    fn string(&self) -> Result<String> {
+        self.as_str()
+            .ok_or_else(|| UnexpectedJsonType(self.clone(), "string").into())
+            .map(&str::to_owned)
+    }
+
+    fn to_array(&self) -> Result<&Vec<Value>> {
+        self.as_array()
+            .ok_or_else(|| UnexpectedJsonType(self.clone(), "array").into())
+    }
 }
 
 #[cfg(test)]

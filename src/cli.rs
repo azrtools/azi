@@ -2,6 +2,7 @@ use std::env::args_os;
 use std::error::Error;
 use std::io::stdin;
 use std::io::Read;
+use std::io::Write;
 use std::slice::Iter;
 
 use env_logger;
@@ -51,7 +52,7 @@ const GLOBAL_FLAGS: &[Flag] = &[HELP, VERSION, DEBUG, TRACE, TENANT, OUTPUT];
 
 const LIST: Command = (
     "list",
-    "List existing resource groups and resources",
+    "Show resource groups and resources",
     &[HELP, LIST_ID, LIST_RESOURCES, LIST_FILTER],
 );
 const LIST_ID: Flag = ("--id", "Also display resource IDs", false);
@@ -60,11 +61,24 @@ const LIST_FILTER: Flag = ("[<filter>]", "Filter resources by name", false);
 
 const CLUSTERS: Command = (
     "clusters",
-    "List existing Kubernetes clusters",
-    &[HELP, CLUSTERS_ID, CLUSTERS_RESOURCES, CLUSTERS_FILTER],
+    "Show Kubernetes clusters",
+    &[
+        HELP,
+        CLUSTERS_ID,
+        CLUSTERS_AGENT_POOLS,
+        CLUSTERS_RESOURCES,
+        CLUSTERS_ALL_RESOURCES,
+        CLUSTERS_FILTER,
+    ],
 );
 const CLUSTERS_ID: Flag = ("--id", "Also display resource IDs", false);
+const CLUSTERS_AGENT_POOLS: Flag = ("-p, --pools", "List agent pools", false);
 const CLUSTERS_RESOURCES: Flag = ("-r, --resources", "List Kubernetes resources", false);
+const CLUSTERS_ALL_RESOURCES: Flag = (
+    "-R, --all-resources",
+    "All resources, including Kubernetes system resources",
+    false,
+);
 const CLUSTERS_FILTER: Flag = ("[<filter>]", "Filter clusters by name", false);
 
 const DOMAINS: Command = (
@@ -89,8 +103,8 @@ const PERIOD: Flag = (
     false,
 );
 
-const GET: Command = ("get", "Execute a GET request", &[HELP, REQUEST]);
-const POST: Command = ("post", "Execute a POST request", &[HELP, BODY, REQUEST]);
+const GET: Command = ("get", "Execute HTTP GET request", &[HELP, REQUEST]);
+const POST: Command = ("post", "Execute HTTP POST request", &[HELP, BODY, REQUEST]);
 const BODY: Flag = (
     "-d, --data <data>",
     "The POST data, or - to read from stdin",
@@ -151,6 +165,7 @@ pub fn run() {
         logger.filter(Some("azi"), LevelFilter::Debug);
     } else {
         logger.filter(Some("azi"), LevelFilter::Info);
+        logger.format(|buf, record| writeln!(buf, "[{}] {}", record.level(), record.args()));
     };
     logger.init();
 
@@ -179,8 +194,16 @@ pub fn run() {
             }
             CLUSTERS => {
                 let id = args.has_command_flag(&CLUSTERS_ID);
+                let pools = args.has_command_flag(&CLUSTERS_AGENT_POOLS);
                 let resources = args.has_command_flag(&CLUSTERS_RESOURCES);
-                let result = clusters(&context, resources, args.get_arg_opt(0))?;
+                let all_resources = args.has_command_flag(&CLUSTERS_ALL_RESOURCES);
+                let result = clusters(
+                    &context,
+                    pools,
+                    resources || all_resources,
+                    all_resources,
+                    args.get_arg_opt(0),
+                )?;
                 output.print_clusters(&result, id)?;
             }
             DOMAINS => {

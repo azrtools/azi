@@ -8,6 +8,7 @@ use crate::object::DnsRecord;
 use crate::object::DnsRecordEntry;
 use crate::object::Identifiable;
 use crate::object::IpAddress;
+use crate::object::KubernetesObject;
 use crate::object::Resource;
 use crate::object::ResourceGroup;
 use crate::object::Subscription;
@@ -91,7 +92,8 @@ pub struct Cluster {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub agent_pools: Vec<AgentPool>,
+    pub agent_pools: Option<Vec<AgentPool>>,
+    pub objects: Option<Vec<KubernetesObject>>,
 }
 
 #[derive(Serialize)]
@@ -105,7 +107,9 @@ pub struct AgentPool {
 
 pub fn clusters(
     context: &Context,
+    pools: bool,
     resources: bool,
+    all_resources: bool,
     filter: Option<&String>,
 ) -> Result<Vec<ClusterResult>> {
     let service = &context.service;
@@ -122,31 +126,53 @@ pub fn clusters(
             let clusters: Result<Vec<_>> = managed_clusters
                 .into_iter()
                 .map(|cluster| {
-                    let agent_pools: Vec<AgentPool> = service
-                        .get_agent_pools(&cluster.id)?
-                        .into_iter()
-                        .map(|agent_pool| {
-                            let profile = cluster
-                                .properties
-                                .agent_pool_profiles
-                                .iter()
-                                .find(|pool| pool.name == agent_pool.name);
+                    let agent_pools = if pools {
+                        let agent_pools = service
+                            .get_agent_pools(&cluster.id)?
+                            .into_iter()
+                            .map(|agent_pool| {
+                                let profile = cluster
+                                    .properties
+                                    .agent_pool_profiles
+                                    .iter()
+                                    .find(|pool| pool.name == agent_pool.name);
 
-                            AgentPool {
-                                name: agent_pool.name,
-                                count: agent_pool.properties.count,
-                                min_count: profile.and_then(|p| p.min_count),
-                                max_count: profile.and_then(|p| p.max_count),
-                                vm_size: agent_pool.properties.vm_size,
+                                AgentPool {
+                                    name: agent_pool.name,
+                                    count: agent_pool.properties.count,
+                                    min_count: profile.and_then(|p| p.min_count),
+                                    max_count: profile.and_then(|p| p.max_count),
+                                    vm_size: agent_pool.properties.vm_size,
+                                }
+                            })
+                            .collect();
+                        Some(agent_pools)
+                    } else {
+                        None
+                    };
+
+                    let objects = if resources {
+                        let kubeconfig = service.get_cluster_kubeconfig(&cluster.id)?;
+                        match service.get_kubernetes_objects(&kubeconfig, all_resources) {
+                            Ok(objects) => Some(objects),
+                            Err(err) => {
+                                warn!(
+                                    "Failed to get Kubernetes resources for {}: {}",
+                                    &cluster.name, err
+                                );
+                                None
                             }
-                        })
-                        .collect();
+                        }
+                    } else {
+                        None
+                    };
 
                     Ok(Cluster {
                         id: cluster.id,
                         name: cluster.name,
                         version: cluster.properties.kubernetes_version,
                         agent_pools,
+                        objects,
                     })
                 })
                 .collect();
