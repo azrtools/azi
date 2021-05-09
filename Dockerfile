@@ -1,5 +1,5 @@
 # Build image
-FROM ekidd/rust-musl-builder:1.52.0 AS build
+FROM ekidd/rust-musl-builder:1.51.0 AS build
 
 COPY Cargo.toml Cargo.lock /tmp/
 COPY src/ /tmp/src/
