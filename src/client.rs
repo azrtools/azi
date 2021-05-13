@@ -296,6 +296,8 @@ impl Client {
                         self.tenant.replace(token_set.access_token.tenant.clone());
                     }
 
+                    eprintln!("Authentication successful!");
+
                     return Ok(token_set);
                 }
                 Response::Error(_, json) => {
