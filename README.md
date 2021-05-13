@@ -20,25 +20,25 @@ You can also use the Docker image: `docker run --rm azrtools/azi --help`
 
 List all subscriptions and resource groups:
 
-```
+```sh
 azi list
 ```
 
 Show Kubernetes clusters and deployments:
 
-```
+```sh
 azi clusters -r
 ```
 
 Show the costs of March 2019:
 
-```
+```sh
 azi costs 201903
 ```
 
 Show DNS entries and resource groups they point to:
 
-```
+```sh
 azi domains
 ```
 
