@@ -241,7 +241,8 @@ impl Client {
                 return Ok(token_set);
             }
             Response::Error(_, json) => {
-                if json["error"].as_str() == Some("invalid_grant") {
+                let error = json["error"].as_str();
+                if error == Some("invalid_grant") || error == Some("interaction_required") {
                     debug!("Refresh token is no longer valid!");
                     Ok(self.request_new_token(client_id, resource)?)
                 } else {

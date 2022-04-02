@@ -282,12 +282,14 @@ impl Output for TextOutput {
             let mut sum_currency = None;
 
             for item in &result.costs {
-                println!(
-                    "  {}  {:0.2} {}",
-                    item.resource_group.blue(),
-                    item.costs,
-                    item.currency
-                );
+                if item.costs >= 0.01 {
+                    let name = if item.resource_group.is_empty() {
+                        "unknown".dimmed()
+                    } else {
+                        item.resource_group.blue()
+                    };
+                    println!("  {}  {:0.2} {}", name, item.costs, item.currency);
+                }
                 sum += item.costs;
                 if sum_currency == None {
                     sum_currency = Some(&item.currency);

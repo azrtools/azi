@@ -234,6 +234,12 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
         }
     }
 
+    fn equals(fqdn1: &str, fqdn2: &str) -> bool {
+        fqdn1 == fqdn2
+            || (fqdn1.ends_with(".") && &fqdn1[..fqdn1.len() - 1] == fqdn2)
+            || (fqdn2.ends_with(".") && fqdn1 == &fqdn2[..fqdn2.len() - 1])
+    }
+
     let mut domain_names: Vec<&String> = (&records).iter().map(|record| &record.fqdn).collect();
 
     if let Some(filter) = filter {
@@ -242,7 +248,7 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
         for record in &records {
             match &record.entry {
                 DnsRecordEntry::CNAME(cname) => {
-                    domain_names.retain(|&domain| domain != cname);
+                    domain_names.retain(|&domain| !equals(domain, cname));
                 }
                 _ => (),
             }
@@ -260,7 +266,7 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
         depth: usize,
     ) {
         for record in records {
-            if &record.fqdn == domain_name {
+            if equals(&record.fqdn, domain_name) {
                 match &record.entry {
                     DnsRecordEntry::CNAME(cname) => {
                         if depth >= MAX_DEPTH {
