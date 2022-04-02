@@ -1,4 +1,7 @@
+use rustls::internal::msgs::codec::Codec;
+use rustls::Certificate;
 use rustls::ClientConfig;
+use rustls::RootCertStore;
 use serde_json::from_reader;
 use serde_json::to_string_pretty;
 use serde_json::Value;
@@ -50,11 +53,16 @@ impl Http {
   }
 
   pub fn for_certificate_authority(ca: &str) -> Result<Self> {
-    let mut client_config = ClientConfig::new();
-    match client_config.root_store.add_pem_file(&mut ca.as_bytes()) {
-      Ok(_) => (),
-      Err(_) => return Err(InvalidCertificate(ca.to_owned()).into()),
+    let cert = match Certificate::read_bytes(ca.as_bytes()) {
+      Some(cert) => cert,
+      None => return Err(InvalidCertificate(ca.to_owned()).into()),
     };
+    let mut root_store = RootCertStore::empty();
+    root_store.add(&cert)?;
+    let client_config = ClientConfig::builder()
+      .with_safe_defaults()
+      .with_root_certificates(root_store)
+      .with_no_client_auth();
     Ok(Self::for_agent(
       AgentBuilder::new()
         .tls_config(Arc::new(client_config))
