@@ -1,7 +1,8 @@
-use rustls::internal::msgs::codec::Codec;
 use rustls::Certificate;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
+use rustls_pemfile::read_all;
+use rustls_pemfile::Item;
 use serde_json::from_reader;
 use serde_json::to_string_pretty;
 use serde_json::Value;
@@ -53,12 +54,15 @@ impl Http {
   }
 
   pub fn for_certificate_authority(ca: &str) -> Result<Self> {
-    let cert = match Certificate::read_bytes(ca.as_bytes()) {
-      Some(cert) => cert,
-      None => return Err(InvalidCertificate(ca.to_owned()).into()),
-    };
     let mut root_store = RootCertStore::empty();
-    root_store.add(&cert)?;
+    for item in read_all(&mut ca.as_bytes())? {
+      match item {
+        Item::X509Certificate(cert) => root_store
+          .add(&Certificate(cert))
+          .or_else(|_| Err(InvalidCertificate(ca.to_owned())).into())?,
+        _ => (),
+      }
+    }
     let client_config = ClientConfig::builder()
       .with_safe_defaults()
       .with_root_certificates(root_store)
