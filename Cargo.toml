@@ -24,7 +24,7 @@ env_logger = "0.9"
 lazy_static = "1.4"
 log = "0.4"
 regex = "1.5"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring", "logging", "std", "tls12"], default-features = false }
 rustls-pemfile = "0.3.0"
 serde = "1.0"
 serde_derive = "1.0"
