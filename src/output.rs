@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use colored::Colorize;
@@ -20,7 +21,7 @@ use crate::utils::Result;
 pub trait Output {
     fn print_list_results(&self, results: &Vec<ListResult>, id: bool) -> Result<()>;
 
-    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool) -> Result<()>;
+    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool, res: bool) -> Result<()>;
 
     fn print_domains(&self, domains: &Vec<Domain>) -> Result<()>;
 
@@ -41,7 +42,7 @@ impl Output for JsonOutput {
         return Ok(());
     }
 
-    fn print_clusters(&self, results: &Vec<ClusterResult>, _: bool) -> Result<()> {
+    fn print_clusters(&self, results: &Vec<ClusterResult>, _: bool, _: bool) -> Result<()> {
         println!("{}", to_string_pretty(results)?);
         return Ok(());
     }
@@ -120,7 +121,7 @@ impl Output for TextOutput {
         return Ok(());
     }
 
-    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool) -> Result<()> {
+    fn print_clusters(&self, results: &Vec<ClusterResult>, id: bool, res: bool) -> Result<()> {
         for result in results {
             self.print_subscription(&result.subscription, id);
 
@@ -142,43 +143,76 @@ impl Output for TextOutput {
                 }
 
                 if let Some(objects) = &cluster.objects {
-                    for object in objects {
-                        match object {
-                            KubernetesObject::Service {
-                                metadata,
-                                service_type: _,
-                                ip_addresses,
-                            } => {
-                                let namespace = format!("{}/", metadata.namespace).dimmed();
-                                print!("    {}{}", namespace, metadata.name);
-                                for ip in ip_addresses {
-                                    let private = match ip {
-                                        IpAddr::V4(ip) => ip.is_private(),
-                                        IpAddr::V6(ip) => ip.is_loopback(),
-                                    };
-                                    if private {
-                                        print!(" {}", ip.to_string().dimmed());
-                                    } else {
-                                        print!(" {}", ip.to_string().green());
+                    let namespaces: BTreeSet<&str> = objects
+                        .iter()
+                        .map(|obj| KubernetesObject::metadata(obj).namespace.as_str())
+                        .collect();
+
+                    for namespace in namespaces {
+                        println!("    {}", namespace.dimmed());
+
+                        for object in objects {
+                            if object.metadata().namespace != namespace {
+                                continue;
+                            }
+                            match object {
+                                KubernetesObject::Service {
+                                    metadata,
+                                    service_type: _,
+                                    ip_addresses,
+                                } => {
+                                    if res {
+                                        print!("      {}", metadata.name);
+                                        for ip in ip_addresses {
+                                            let private = match ip {
+                                                IpAddr::V4(ip) => ip.is_private(),
+                                                IpAddr::V6(ip) => ip.is_loopback(),
+                                            };
+                                            if private {
+                                                print!(" {}", ip.to_string().dimmed());
+                                            } else {
+                                                print!(" {}", ip.to_string().green());
+                                            }
+                                        }
+                                        println!();
                                     }
                                 }
-                                println!();
-                            }
-                            KubernetesObject::Deployment {
-                                metadata,
-                                target,
-                                ready,
-                            } => {
-                                let pods = format!("{}/{}", ready, target);
-                                let pods = if ready >= target {
-                                    pods.green()
-                                } else {
-                                    pods.red()
-                                };
-                                let namespace = format!("{}/", metadata.namespace).dimmed();
-                                println!("    {}{} {}", namespace, metadata.name, pods);
-                            }
-                        };
+                                KubernetesObject::Deployment {
+                                    metadata,
+                                    target,
+                                    ready,
+                                    containers,
+                                } => {
+                                    if res {
+                                        let pods = format!("{}/{}", ready, target);
+                                        let pods = if ready >= target {
+                                            pods.green()
+                                        } else {
+                                            pods.red()
+                                        };
+                                        println!("      {} {}", metadata.name, pods);
+                                        if let Some(containers) = containers {
+                                            for container in containers {
+                                                println!(
+                                                    "        {} {}",
+                                                    container.name,
+                                                    container.image.dimmed()
+                                                );
+                                            }
+                                        }
+                                    } else if let Some(containers) = containers {
+                                        for container in containers {
+                                            println!(
+                                                "      {}{} {}",
+                                                format!("{}:", metadata.name).dimmed(),
+                                                container.name,
+                                                container.image.dimmed()
+                                            );
+                                        }
+                                    }
+                                }
+                            };
+                        }
                     }
                 }
             }

@@ -78,6 +78,10 @@ pub struct ManagedCluster {
 pub struct ManagedClusterProperties {
     #[serde(rename = "kubernetesVersion")]
     pub kubernetes_version: String,
+    #[serde(rename = "fqdn")]
+    pub fqdn: Option<String>,
+    #[serde(rename = "privateFQDN")]
+    pub private_fqdn: Option<String>,
     #[serde(rename = "agentPoolProfiles")]
     pub agent_pool_profiles: Vec<AgentPoolProfile>,
 }
@@ -112,17 +116,28 @@ pub struct KubernetesMetadata {
     pub labels: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KubernetesContainer {
+    pub name: String,
+    pub image: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum KubernetesObject {
+    #[serde(rename = "service")]
     Service {
         metadata: KubernetesMetadata,
+        #[serde(rename = "type")]
         service_type: String,
+        #[serde(rename = "ipAddresses")]
         ip_addresses: Vec<IpAddr>,
     },
+    #[serde(rename = "deployment")]
     Deployment {
         metadata: KubernetesMetadata,
         target: u64,
         ready: u64,
+        containers: Option<Vec<KubernetesContainer>>,
     },
 }
 
@@ -138,6 +153,7 @@ impl KubernetesObject {
                 metadata,
                 target: _,
                 ready: _,
+                containers: _,
             } => metadata,
         }
     }

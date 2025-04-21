@@ -201,7 +201,7 @@ impl AccessTokenFileEntry {
         }
         let expires_on =
             match NaiveDateTime::parse_from_str(&self.expires_on, "%Y-%m-%d %H:%M:%S%.6f") {
-                Ok(date) => date.and_utc().timestamp(),
+                Ok(date) => date.and_local_timezone(Local).unwrap().timestamp(),
                 Err(_) => DateTime::parse_from_rfc3339(&self.expires_on)?.timestamp(),
             };
         Ok(TokenSet {

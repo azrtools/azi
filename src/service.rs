@@ -1,5 +1,7 @@
 use std::net::IpAddr;
+use std::process::Command;
 use std::str::from_utf8;
+use std::vec;
 
 use base64::decode;
 use serde_derive::Deserialize;
@@ -19,6 +21,7 @@ use crate::object::Costs;
 use crate::object::DnsRecord;
 use crate::object::DnsRecordEntry;
 use crate::object::IpAddress;
+use crate::object::KubernetesContainer;
 use crate::object::KubernetesMetadata;
 use crate::object::KubernetesObject;
 use crate::object::ManagedCluster;
@@ -171,7 +174,7 @@ impl Service {
 
     pub fn get_clusters(&self, subscription_id: &str) -> Result<Vec<ManagedCluster>> {
         let url = format!(
-            "https://management.azure.com/subscriptions/{}/providers/Microsoft.ContainerService/managedClusters?api-version=2021-03-01",
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.ContainerService/managedClusters?api-version=2024-02-01",
             subscription_id
         );
         self.client.new_request(&url, DEFAULT_RESOURCE).get_list()
@@ -179,13 +182,13 @@ impl Service {
 
     pub fn get_agent_pools(&self, cluster_id: &str) -> Result<Vec<AgentPool>> {
         let url = format!(
-            "https://management.azure.com{}/agentPools?api-version=2021-03-01",
+            "https://management.azure.com{}/agentPools?api-version=2024-02-01",
             cluster_id
         );
         self.client.new_request(&url, DEFAULT_RESOURCE).get_list()
     }
 
-    pub fn get_cluster_kubeconfig(&self, cluster_id: &str) -> Result<String> {
+    pub fn get_cluster_kubeconfig(&self, cluster_id: &str, public_fqdn: bool) -> Result<String> {
         #[derive(Debug, Clone, Deserialize)]
         pub struct ClusterCredentials {
             pub kubeconfigs: Vec<ClusterCredentialsEntry>,
@@ -198,9 +201,14 @@ impl Service {
         }
 
         let credentials: ClusterCredentials = {
+            let server_fqdn = if public_fqdn {
+                "&server-fqdn=public"
+            } else {
+                ""
+            };
             let url = format!(
-                "https://management.azure.com{}/listClusterUserCredential?api-version=2021-03-01",
-                cluster_id
+                "https://management.azure.com{}/listClusterUserCredential?api-version=2024-02-01{}",
+                cluster_id, server_fqdn
             );
             self.client.new_request(&url, DEFAULT_RESOURCE).post()?
         };
@@ -221,6 +229,7 @@ impl Service {
         &self,
         kubeconfig: &str,
         all_resources: bool,
+        containers: bool,
     ) -> Result<Vec<KubernetesObject>> {
         let cluster = KubernetesCluster::parse(kubeconfig)?;
 
@@ -257,6 +266,22 @@ impl Service {
                         .filter(|p| p.as_str() == "kubernetes")
                         .is_none()
             });
+        }
+
+        if !containers {
+            for object in objects.iter_mut() {
+                match object {
+                    KubernetesObject::Deployment {
+                        metadata: _,
+                        target: _,
+                        ready: _,
+                        containers,
+                    } => {
+                        containers.take();
+                    }
+                    _ => (),
+                };
+            }
         }
 
         Ok(objects)
@@ -320,10 +345,14 @@ impl Service {
             let metadata = json["metadata"].clone().to::<KubernetesMetadata>()?;
             let target = json["status"]["replicas"].as_u64().unwrap_or(0);
             let ready = json["status"]["readyReplicas"].as_u64().unwrap_or(0);
+            let containers = json["spec"]["template"]["spec"]["containers"]
+                .clone()
+                .to::<Vec<KubernetesContainer>>()?;
             Ok(KubernetesObject::Deployment {
                 metadata,
                 target,
                 ready,
+                containers: Some(containers),
             })
         }
 
@@ -551,7 +580,9 @@ impl KubernetesCluster {
 
         let ca = from_utf8(&decode(&to_str(&cluster["certificate-authority-data"])?)?)?.to_owned();
 
-        let auth = if !user["auth-provider"].is_badvalue() {
+        let auth = if !user["exec"].is_badvalue() {
+            Self::exec(&user["exec"])?
+        } else if !user["auth-provider"].is_badvalue() {
             KubernetesAuthentication::AccessToken {
                 client_id: to_str(&user["auth-provider"]["config"]["client-id"])?,
                 resource: to_str(&user["auth-provider"]["config"]["apiserver-id"])?,
@@ -565,6 +596,32 @@ impl KubernetesCluster {
             certificate_authority: ca,
             auth,
         })
+    }
+
+    fn exec(exec: &Yaml) -> Result<KubernetesAuthentication> {
+        let cmd = exec["command"].as_str().unwrap_or("");
+        if cmd != "kubelogin" {
+            return Err(ServiceError("invalid auth command").into());
+        }
+
+        let empty: Vec<Yaml> = vec![];
+        let args: Vec<&str> = exec["args"]
+            .as_vec()
+            .unwrap_or(&empty)
+            .iter()
+            .map(|e| e.as_str().unwrap_or(""))
+            .collect();
+
+        debug!("Executing auth command: {}", cmd);
+        trace!("Command arguments: {:?}", args);
+
+        let output = Command::new(cmd).args(args).output()?.stdout;
+        let json = serde_json::from_slice::<serde_json::Value>(&output)?;
+
+        match json["status"]["token"].as_str() {
+            Some(token) => Ok(KubernetesAuthentication::BearerToken(token.to_string())),
+            None => Err(ServiceError("could not execute auth command").into()),
+        }
     }
 }
 

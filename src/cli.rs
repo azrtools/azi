@@ -74,6 +74,7 @@ const CLUSTERS: Command = (
         CLUSTERS_AGENT_POOLS,
         CLUSTERS_RESOURCES,
         CLUSTERS_ALL_RESOURCES,
+        CLUSTERS_CONTAINERS,
         CLUSTERS_FILTER,
     ],
 );
@@ -83,6 +84,11 @@ const CLUSTERS_RESOURCES: Flag = ("-r, --resources", "List Kubernetes resources"
 const CLUSTERS_ALL_RESOURCES: Flag = (
     "-R, --all-resources",
     "All resources, including Kubernetes system resources",
+    false,
+);
+const CLUSTERS_CONTAINERS: Flag = (
+    "-c, --containers",
+    "List deployment container templates",
     false,
 );
 const CLUSTERS_FILTER: Flag = ("[<filter>]", "Filter clusters by name", false);
@@ -203,14 +209,16 @@ pub fn run() {
                 let pools = args.has_command_flag(&CLUSTERS_AGENT_POOLS);
                 let resources = args.has_command_flag(&CLUSTERS_RESOURCES);
                 let all_resources = args.has_command_flag(&CLUSTERS_ALL_RESOURCES);
+                let containers = args.has_command_flag(&CLUSTERS_CONTAINERS);
                 let result = clusters(
                     &context,
                     pools,
-                    resources || all_resources,
+                    resources || all_resources || containers,
                     all_resources,
+                    containers,
                     args.get_arg_opt(0),
                 )?;
-                output.print_clusters(&result, id)?;
+                output.print_clusters(&result, id, resources || all_resources)?;
             }
             DOMAINS => {
                 let result = domains(&context, args.get_arg_opt(0))?;
@@ -341,23 +349,56 @@ impl Args {
 
         let mut double_dash = false;
 
-        fn parse_flag(flags: &[Flag], arg: &str, it: &mut Iter<&str>) -> Result<Arg> {
-            let found = flags
-                .iter()
-                .find(|flag| arg == short_flag(flag) || arg == long_flag(flag));
+        fn parse_long_flag(
+            flags: &[Flag],
+            arg: &str,
+            it: &mut Iter<&str>,
+            target: &mut Vec<Arg>,
+        ) -> Result<()> {
+            let found = flags.iter().find(|flag| arg == long_flag(flag));
             if let Some(flag) = found {
                 if flag.2 {
                     if let Some(&arg) = it.next() {
-                        return Ok((*flag, arg.to_owned()));
+                        target.push((*flag, arg.to_owned()));
                     } else {
                         return Err(parse_error!("missing argument for {}", long_flag(flag)));
                     }
                 } else {
-                    return Ok((*flag, "".to_owned()));
+                    target.push((*flag, "".to_owned()));
                 }
+                return Ok(());
             } else {
                 return Err(parse_error!("unknown option: {}", arg));
             }
+        }
+
+        fn parse_short_flags(
+            flags: &[Flag],
+            arg: &str,
+            it: &mut Iter<&str>,
+            target: &mut Vec<Arg>,
+        ) -> Result<()> {
+            for i in 1..arg.len() {
+                let a = format!("-{}", &arg[i..i + 1]);
+                let found = flags.iter().find(|flag| a == short_flag(flag));
+                if let Some(flag) = found {
+                    if flag.2 {
+                        if i + 1 < arg.len() {
+                            target.push((*flag, arg[i + 1..].to_owned()));
+                            break;
+                        } else if let Some(&arg) = it.next() {
+                            target.push((*flag, arg.to_owned()));
+                        } else {
+                            return Err(parse_error!("missing argument for {}", long_flag(flag)));
+                        }
+                    } else {
+                        target.push((*flag, "".to_owned()));
+                    }
+                } else {
+                    return Err(parse_error!("unknown option: {}", arg));
+                }
+            }
+            return Ok(());
         }
 
         let mut it = args.iter();
@@ -367,14 +408,18 @@ impl Args {
             } else if arg == "--" {
                 double_dash = true;
             } else if let Some(command) = command {
-                if arg.starts_with("-") {
-                    command_flags.push(parse_flag(command.2, arg, &mut it)?);
+                if arg.starts_with("--") {
+                    parse_long_flag(command.2, arg, &mut it, &mut command_flags)?;
+                } else if arg.starts_with("-") && arg.len() > 1 {
+                    parse_short_flags(command.2, arg, &mut it, &mut command_flags)?;
                 } else {
                     command_args.push(arg.to_owned());
                 }
             } else {
-                if arg.starts_with("-") {
-                    global_flags.push(parse_flag(GLOBAL_FLAGS, arg, &mut it)?);
+                if arg.starts_with("--") {
+                    parse_long_flag(GLOBAL_FLAGS, arg, &mut it, &mut global_flags)?;
+                } else if arg.starts_with("-") && arg.len() > 1 {
+                    parse_short_flags(GLOBAL_FLAGS, arg, &mut it, &mut global_flags)?;
                 } else {
                     let found = COMMANDS.iter().find(|command| arg == command.0);
                     if let Some(cmd) = found {

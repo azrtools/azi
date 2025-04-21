@@ -110,6 +110,7 @@ pub fn clusters(
     pools: bool,
     resources: bool,
     all_resources: bool,
+    containers: bool,
     filter: Option<&String>,
 ) -> Result<Vec<ClusterResult>> {
     let service = &context.service;
@@ -152,8 +153,14 @@ pub fn clusters(
                     };
 
                     let objects = if resources {
-                        let kubeconfig = service.get_cluster_kubeconfig(&cluster.id)?;
-                        match service.get_kubernetes_objects(&kubeconfig, all_resources) {
+                        let kubeconfig = service.get_cluster_kubeconfig(
+                            &cluster.id,
+                            cluster.properties.fqdn.is_some()
+                                && cluster.properties.private_fqdn.is_some(),
+                        )?;
+                        let objects =
+                            service.get_kubernetes_objects(&kubeconfig, all_resources, containers);
+                        match objects {
                             Ok(objects) => Some(objects),
                             Err(err) => {
                                 warn!(
