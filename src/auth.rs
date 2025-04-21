@@ -9,6 +9,7 @@ use std::time::UNIX_EPOCH;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::LocalResult;
+use chrono::NaiveDateTime;
 use chrono::TimeZone;
 use dirs::home_dir;
 use serde_derive::Deserialize;
@@ -198,10 +199,11 @@ impl AccessTokenFileEntry {
                 access_token.tenant.id, tenant.id
             );
         }
-        let expires_on = match Local.datetime_from_str(&self.expires_on, "%Y-%m-%d %H:%M:%S%.6f") {
-            Ok(date) => date.timestamp(),
-            Err(_) => DateTime::parse_from_rfc3339(&self.expires_on)?.timestamp(),
-        };
+        let expires_on =
+            match NaiveDateTime::parse_from_str(&self.expires_on, "%Y-%m-%d %H:%M:%S%.6f") {
+                Ok(date) => date.and_utc().timestamp(),
+                Err(_) => DateTime::parse_from_rfc3339(&self.expires_on)?.timestamp(),
+            };
         Ok(TokenSet {
             resource: self.resource.clone(),
             access_token,

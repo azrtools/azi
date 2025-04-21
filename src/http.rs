@@ -1,4 +1,4 @@
-use rustls::Certificate;
+use rustls::pki_types::CertificateDer;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls_pemfile::read_all;
@@ -58,13 +58,12 @@ impl Http {
         for item in read_all(&mut ca.as_bytes())? {
             match item {
                 Item::X509Certificate(cert) => root_store
-                    .add(&Certificate(cert))
+                    .add(CertificateDer::from_slice(&cert))
                     .or_else(|_| Err(InvalidCertificate(ca.to_owned())).into())?,
                 _ => (),
             }
         }
         let client_config = ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Ok(Self::for_agent(
