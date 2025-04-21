@@ -120,9 +120,36 @@ impl Client {
 
     fn request(&self, request: &Request) -> Result<Value> {
         let token_set = self.get_token_set(CLIENT_ID, request.resource)?;
-        match self.execute_request(request, &token_set)? {
-            Response::Success(json) => self.get_value(&json),
+        let mut json = match self.execute_request(request, &token_set)? {
+            Response::Success(json) => Ok(json),
             Response::Error(_, json) => self.try_rerequest(&token_set, request, &json),
+        }?;
+        let mut value = json["value"].take();
+        if value.is_null() {
+            Ok(json)
+        } else {
+            if let Some(arr) = value.as_array_mut() {
+                let mut next_link = match json["nextLink"].take() {
+                    Value::String(s) => Some(s),
+                    _ => None,
+                };
+                while let Some(url) = next_link {
+                    let request = self.new_request(&url, "");
+                    let mut json = match self.execute_request(&request, &token_set)? {
+                        Response::Success(json) => Ok(json),
+                        Response::Error(_, json) => self.try_rerequest(&token_set, &request, &json),
+                    }?;
+                    match json["value"].take().as_array_mut() {
+                        Some(a) => arr.append(a),
+                        None => return Err(UnexpectedJson(json).into()),
+                    }
+                    next_link = match json["nextLink"].take() {
+                        Value::String(s) => Some(s),
+                        _ => break,
+                    }
+                }
+            }
+            Ok(value)
         }
     }
 
@@ -136,8 +163,7 @@ impl Client {
             if code == "ExpiredAuthenticationToken" || code == "AuthenticationFailed" {
                 debug!("Auth token expired!");
                 let token_set = self.refresh_token(CLIENT_ID, request.resource, token_set)?;
-                let json = self.execute_request(request, &token_set)?.success()?;
-                return self.get_value(&json);
+                return self.execute_request(request, &token_set)?.success();
             } else {
                 debug!("Unknown error: {}", code);
             }
@@ -164,15 +190,6 @@ impl Client {
             ]),
             request.body,
         )
-    }
-
-    fn get_value(&self, json: &Value) -> Result<Value> {
-        let value = &json["value"];
-        if value.is_null() {
-            Ok(json.clone())
-        } else {
-            Ok(value.clone())
-        }
     }
 
     pub fn get_token_set(&self, client_id: &str, resource: &str) -> Result<TokenSet> {
