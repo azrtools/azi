@@ -8,10 +8,6 @@ use serde_derive::Serialize;
 use crate::error::AppError::ParseError;
 use crate::utils::Result;
 
-pub trait Named {
-    fn name(&self) -> &String;
-}
-
 pub trait Identifiable {
     fn id(&self) -> &String;
 
@@ -38,10 +34,7 @@ pub trait Identifiable {
 
 macro_rules! object {
     ($($name:ident),*) => (
-        $(impl Named for $name {
-            fn name(&self) -> &String { &self.name }
-        }
-        impl Identifiable for $name {
+        $(impl Identifiable for $name {
             fn id(&self) -> &String { &self.id }
         })*
     )
@@ -77,7 +70,6 @@ pub struct Resource {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManagedCluster {
     pub id: String,
-    pub location: String,
     pub name: String,
     pub properties: ManagedClusterProperties,
 }

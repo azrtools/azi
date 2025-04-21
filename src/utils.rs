@@ -64,8 +64,6 @@ fn skip_bom(mut reader: BufReader<File>) -> Result<BufReader<File>> {
 
 pub trait ValueExt {
     fn to<T: DeserializeOwned>(self) -> Result<T>;
-    fn to_u64(&self) -> Result<u64>;
-    fn to_str(&self) -> Result<&str>;
     fn string(&self) -> Result<String>;
     fn to_array(&self) -> Result<&Vec<Value>>;
 }
@@ -73,16 +71,6 @@ pub trait ValueExt {
 impl ValueExt for Value {
     fn to<T: DeserializeOwned>(self) -> Result<T> {
         Ok(serde_json::from_value(self)?)
-    }
-
-    fn to_u64(&self) -> Result<u64> {
-        self.as_u64()
-            .ok_or_else(|| UnexpectedJsonType(self.clone(), "u64").into())
-    }
-
-    fn to_str(&self) -> Result<&str> {
-        self.as_str()
-            .ok_or_else(|| UnexpectedJsonType(self.clone(), "str").into())
     }
 
     fn string(&self) -> Result<String> {

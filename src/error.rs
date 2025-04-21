@@ -11,7 +11,7 @@ pub enum AppError {
 
     ParseError(String),
 
-    HttpError(u16, Value),
+    HttpError(u16),
     InvalidCertificate(String),
 
     UnexpectedJson(Value),
@@ -32,7 +32,7 @@ impl fmt::Display for AppError {
             AppError::HttpClientError => f.write_str("HTTP client error!"),
             AppError::ServiceError(s) => f.write_str(s),
             AppError::ParseError(s) => f.write_str(s),
-            AppError::HttpError(status, _) => f.write_fmt(format_args!("HTTP error {}", status)),
+            AppError::HttpError(status) => f.write_fmt(format_args!("HTTP error {}", status)),
             AppError::InvalidCertificate(cert) => {
                 f.write_fmt(format_args!("Invalid certificate data: {}", cert))
             }

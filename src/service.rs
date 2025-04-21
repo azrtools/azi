@@ -512,7 +512,6 @@ impl Service {
 }
 
 pub struct KubernetesCluster {
-    pub name: String,
     pub server: String,
     pub certificate_authority: String,
     pub auth: KubernetesAuthentication,
@@ -562,7 +561,6 @@ impl KubernetesCluster {
         };
 
         Ok(KubernetesCluster {
-            name: to_str(&context["cluster"])?,
             server: to_str(&cluster["server"])?,
             certificate_authority: ca,
             auth,
@@ -599,7 +597,6 @@ users:
         let parsed = KubernetesCluster::parse(data);
         assert_eq!(true, parsed.is_ok());
         let cluster = parsed.unwrap();
-        assert_eq!("cluster0", cluster.name);
         assert_eq!("http://localhost", cluster.server);
         assert_eq!("CA", cluster.certificate_authority);
         assert_eq!(

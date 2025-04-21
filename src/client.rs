@@ -316,7 +316,7 @@ impl Client {
     fn update_tokens(&self, token_set: &TokenSet) -> Result<()> {
         let mut token_sets = { self.token_sets.try_borrow()?.clone() };
         let mut updated = false;
-        for mut t in token_sets.iter_mut() {
+        for t in token_sets.iter_mut() {
             if t.matches(token_set) {
                 t.access_token = token_set.access_token.clone();
                 t.refresh_token = token_set.refresh_token.clone();
