@@ -378,7 +378,7 @@ impl Service {
         zone: &str,
     ) -> Result<Vec<DnsRecord>> {
         let url = format!(
-            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/dnsZones/{}/recordsets?api-version=2018-03-01-preview",
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/dnsZones/{}/recordsets?api-version=2018-05-01",
             subscription_id,
             resource_group,
             zone,
@@ -430,7 +430,7 @@ impl Service {
 
     pub fn get_costs(&self, subscription_id: &str, timeframe: &Timeframe) -> Result<Vec<Costs>> {
         let url = format!(
-            "https://management.azure.com/subscriptions/{}/providers/Microsoft.CostManagement/query?api-version=2019-01-01",
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.CostManagement/query?api-version=2024-08-01",
             subscription_id
         );
 
@@ -445,20 +445,20 @@ impl Service {
                 _ => Value::Null
             },
             "dataset": {
-            "granularity": "Monthly",
-            "aggregation": {
-              "totalCost": {
-                "name": "PreTaxCost",
-                "function": "Sum"
-              }
-            },
-            "grouping": [
-              {
-                "type": "Dimension",
-                "name": "ResourceGroup"
-              }
-            ]
-          }
+                "granularity": "Monthly",
+                "aggregation": {
+                    "totalCost": {
+                        "name": "PreTaxCost",
+                        "function": "Sum"
+                    }
+                },
+                "grouping": [
+                    {
+                        "type": "Dimension",
+                        "name": "ResourceGroup"
+                    }
+                ]
+            }
         });
 
         let json = self
