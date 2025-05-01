@@ -177,7 +177,10 @@ pub struct DnsRecord {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum DnsRecordEntry {
-    A(Vec<String>),
+    A {
+        ip_addresses: Vec<String>,
+        target_resource: Option<String>,
+    },
     CNAME(String),
 }
 

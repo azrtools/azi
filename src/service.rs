@@ -438,7 +438,15 @@ impl Service {
                         .filter_map(|row| row["ipv4Address"].as_str())
                         .map(str::to_owned)
                         .collect();
-                    DnsRecordEntry::A(ip_addresses)
+                    DnsRecordEntry::A {
+                        ip_addresses,
+                        target_resource: None,
+                    }
+                } else if let Some(res_id) = row["properties"]["targetResource"]["id"].as_str() {
+                    DnsRecordEntry::A {
+                        ip_addresses: vec![],
+                        target_resource: Some(res_id.to_owned()),
+                    }
                 } else if let Some(cname) = row["properties"]["CNAMERecord"]["cname"].as_str() {
                     DnsRecordEntry::CNAME(cname.to_owned())
                 } else {

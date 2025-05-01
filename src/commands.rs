@@ -227,6 +227,7 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
     }
 
     let mut ip_to_group: HashMap<String, ResourceGroup> = HashMap::new();
+    let mut ip_id_to_address: HashMap<String, String> = HashMap::new();
     for subscription in &subscriptions {
         let groups = service.get_resource_groups(&subscription.subscription_id)?;
         let ips = service.get_ip_addresses(&subscription.subscription_id)?;
@@ -236,8 +237,9 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
                 .iter()
                 .find(|group| group.name.to_lowercase() == group_name);
             if let Some(group) = group {
-                ip_to_group.insert(ip.ip_address, group.clone());
+                ip_to_group.insert(ip.ip_address.clone(), group.clone());
             }
+            ip_id_to_address.insert(ip.id, ip.ip_address);
         }
     }
 
@@ -283,7 +285,10 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
                             resolve_entries(entries, records, cname, depth + 1);
                         }
                     }
-                    DnsRecordEntry::A(_) => {
+                    DnsRecordEntry::A {
+                        ip_addresses: _,
+                        target_resource: _,
+                    } => {
                         entries.push(Some(record.entry.clone()));
                     }
                 }
@@ -300,12 +305,23 @@ pub fn domains(context: &Context, filter: Option<&String>) -> Result<Vec<Domain>
         let mut ip_addresses = vec![];
         if let Some(Some(entry)) = entries.last() {
             match entry {
-                DnsRecordEntry::A(ip_addrs) => {
-                    for ip in ip_addrs {
+                DnsRecordEntry::A {
+                    ip_addresses: ips,
+                    target_resource,
+                } => {
+                    for ip in ips {
                         ip_addresses.push(DomainIpAddress {
                             ip_address: ip.clone(),
                             resource_group: ip_to_group.get(ip).map(|r| r.clone()),
                         });
+                    }
+                    if let Some(target_resource) = target_resource {
+                        if let Some(ip) = ip_id_to_address.get(target_resource) {
+                            ip_addresses.push(DomainIpAddress {
+                                ip_address: ip.clone(),
+                                resource_group: ip_to_group.get(ip).map(|r| r.clone()),
+                            });
+                        }
                     }
                 }
                 _ => (),

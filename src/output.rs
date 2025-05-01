@@ -276,7 +276,10 @@ impl Output for TextOutput {
             for record in &result.records {
                 println!("  {}", record.name.cyan());
                 match &record.entry {
-                    DnsRecordEntry::A(ip_addresses) => {
+                    DnsRecordEntry::A {
+                        ip_addresses,
+                        target_resource: _,
+                    } => {
                         for ip in ip_addresses {
                             println!("    {} {}", "A".dimmed(), ip);
                         }
