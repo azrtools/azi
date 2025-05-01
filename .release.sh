@@ -18,7 +18,7 @@ rm -rf target
 mkdir target || exit 1
 
 # Linux binary
-CIRCLECI_URL=$(curl "https://circleci.com/api/v1.1/project/github/${REPO}/latest/artifacts?branch=main" | jq -r .[0].url)
+CIRCLECI_URL=$(curl -s "https://circleci.com/api/v1.1/project/github/${REPO}/latest/artifacts?branch=main" | jq -r .[0].url)
 curl -L "${CIRCLECI_URL}" >target/azi-linux64 || exit 1
 
 # Windows binary
@@ -42,7 +42,7 @@ GH_UPLOAD_URL="https://uploads.github.com/repos/${REPO}/releases/${GH_RELEASE_ID
 
 for f in "azi-macos-amd64" "azi-linux64" "azi-win64.exe"; do
     echo "Uploading ${f}"
-    CONTENT_TYPE="$(file -b --mime-type target/${f})"
-    curl -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: ${CONTENT_TYPE}" \
+    curl --fail -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Content-Type: application/octet-stream" \
         --data-binary "@target/${f}" "${GH_UPLOAD_URL}?name=${f}" >/dev/null || exit 1
 done
