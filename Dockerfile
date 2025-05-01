@@ -1,17 +1,18 @@
 # Build image
-FROM ekidd/rust-musl-builder:1.57.0 AS build
+FROM docker.io/clux/muslrust:1.85.1-stable AS build
 
 COPY Cargo.toml Cargo.lock /tmp/
 COPY src/ /tmp/src/
 
-RUN cargo install --path /tmp && strip /home/rust/.cargo/bin/azi
+RUN cargo install --path /tmp
+RUN strip /root/.cargo/bin/azi
 
 # Runtime image
-FROM alpine:3.15.3
+FROM docker.io/alpine:3.20
 
 RUN apk add --no-cache ca-certificates tini && adduser -D -g azi azi
 
-COPY --from=build /home/rust/.cargo/bin/azi /usr/bin/azi
+COPY --from=build /root/.cargo/bin/azi /usr/bin/azi
 
 USER azi
 WORKDIR /home/azi
